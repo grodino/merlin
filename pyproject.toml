@@ -1,0 +1,32 @@
+[project]
+name = "merlin"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "polars",
+    "matplotlib",
+    "folktables",
+    "scikit-learn",
+    "pyarrow",
+    "skrub",
+    "seaborn",
+    "scipy",
+    "plotly",
+    "typer-slim",
+    "ipykernel",
+    "nbformat",
+]
+
+
+[tool.pixi.project]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
+
+[tool.pixi.pypi-dependencies]
+fairlearn = { git = "https://github.com/fairlearn/fairlearn/" }
+
+[tool.pyright]
+venvPath = "./.pixi/envs/"
+venv = "default"
+exclude = ["**/__pycache__", "data", "generated"]
