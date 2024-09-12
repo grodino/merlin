@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Literal, Self
 
+from fairlearn.postprocessing._threshold_optimizer import ThresholdOptimizer
 import numpy as np
 from numpy.random.bit_generator import SeedSequence
 from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin
@@ -130,7 +131,7 @@ class ROCMitigation(ManipulatedClassifier):
     def predict(
         self,
         X,
-        sensitive_features,
+        sensitive_features=None,
         audit_queries_mask=None,
         seed: SeedSequence | None = None,
     ) -> np.ndarray:
@@ -162,5 +163,64 @@ class ROCMitigation(ManipulatedClassifier):
         y_pred[(critical_region & sensitive_features).astype(bool)] = 1
         # Always answer no to the non-discriminated group
         y_pred[(critical_region & (~sensitive_features)).astype(bool)] = 0
+
+        return y_pred
+
+
+class ModelSwap(ManipulatedClassifier):
+    """When audit queries are detected, swap the "real" classifier for an
+    optimally fair one."""
+
+    def __init__(
+        self,
+        estimator,
+        requires_sensitive_features: (
+            None | Literal["fit"] | Literal["predict"] | Literal["both"]
+        ) = None,
+    ) -> None:
+        super().__init__(estimator, requires_sensitive_features)
+
+        self.fair_estimator = ThresholdOptimizer(
+            estimator=estimator, constraints="demographic_parity"
+        )
+
+    def fit(self, X, y, sensitive_features=None) -> Self:
+        # Fit the estimator
+        this = super().fit(X, y, sensitive_features)
+
+        # Fit the fair estimator
+        self.fair_estimator.fit(X, y, sensitive_features=sensitive_features)
+
+        return this
+
+    def predict(
+        self,
+        X,
+        sensitive_features=None,
+        audit_queries_mask=None,
+        seed: SeedSequence | None = None,
+    ) -> np.ndarray:
+        assert (
+            audit_queries_mask is not None
+        ), f"{self.__class__.__name__} requires the audit queries mask"
+        assert (
+            sensitive_features is not None
+        ), f"{self.__class__.__name__} requires the sensitve features at inference"
+        assert (
+            sensitive_features.dtype == np.bool
+        ), f"{self.__class__.__name__} requires binary sensitve features"
+
+        y_pred = np.zeros(len(X))
+
+        # Output on non audit points come from the unconstrained model
+        y_pred[~audit_queries_mask] = self._predict(
+            X.loc[~audit_queries_mask], sensitive_features.loc[~audit_queries_mask]
+        )
+
+        # Output on audit points come from the fair model
+        y_pred[audit_queries_mask] = self.fair_estimator.predict(
+            X.loc[audit_queries_mask],
+            sensitive_features=sensitive_features.loc[audit_queries_mask],
+        )
 
         return y_pred

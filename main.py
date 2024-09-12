@@ -24,7 +24,12 @@ from skrub import tabular_learner
 
 from merlin.audit import audit_set
 from merlin.detection import AuditDetector
-from merlin.manipulation import HonestClassifier, RandomizedResponse, ROCMitigation
+from merlin.manipulation import (
+    HonestClassifier,
+    ModelSwap,
+    RandomizedResponse,
+    ROCMitigation,
+)
 from merlin.utils import extract_params, random_state
 
 
@@ -204,6 +209,9 @@ def generate_model(
             theta = strategy_params["theta"]
             model = ROCMitigation(estimator, theta, requires_sensitive_features)
 
+        case "model_swap":
+            model = ModelSwap(estimator, requires_sensitive_features)
+
         case _:
             raise NotImplementedError(
                 f"The manipulation strategy {strategy} is not supported"
@@ -366,8 +374,7 @@ def dev():
     audit_budget = 1_000
     n_repetitions = 5
     entropy = 123456789
-    # output = Path(f"generated/dev{n_repetitions}_{dataset}.jsonl")
-    output = Path("generated/dev.jsonl")
+    output = Path(f"generated/dev{n_repetitions}_{dataset}.jsonl")
     tpr = 1.0
     tnr = 1.0
 
@@ -385,6 +392,18 @@ def dev():
             dataset=dataset,
             model_name="unconstrained",
             strategy="honest",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("model swap")
+        run_audit(
+            dataset=dataset,
+            model_name="unconstrained",
+            strategy="model_swap",
             detection_tpr=tpr,
             detection_tnr=tnr,
             audit_budget=audit_budget,

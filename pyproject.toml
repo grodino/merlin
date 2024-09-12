@@ -14,6 +14,7 @@ dependencies = [
     "scipy",
     "plotly",
     "typer-slim",
+    # Notebook dependencies
     "ipykernel",
     "nbformat",
 ]
