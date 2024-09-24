@@ -10,7 +10,7 @@ def audit_set(
     group: pd.Series,
     budget: int,
     seed: np.random.SeedSequence,
-):
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     X_audit, _, y_audit, _, A_audit, _ = train_test_split(
         features,
         label,

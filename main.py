@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from functools import cache
 
+import folktables
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -17,9 +18,10 @@ from fairlearn.reductions import (
     DemographicParity,
     ExponentiatedGradient,
 )
-from folktables import ACSDataSource, ACSEmployment
+from folktables import ACSDataSource, state_list
 from plotly import express as px
 from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from skrub import tabular_learner
 
@@ -129,24 +131,48 @@ Dataset = Annotated[
 
 
 @cache
+def get_data(dataset: Dataset, binarize_group: bool = False):
     data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
+    group_col = "AGEP"
 
-    if binarize:
-        acs_data = data_source.get_data(states=["AL"], download=True)
+    ACSEmployment = folktables.BasicProblem(
+        features=[
+            "AGEP",
+            "SCHL",
+            "MAR",
+            "RELP",  # Not present in 2019
+            "DIS",
+            "ESP",
+            "CIT",
+            "MIG",
+            "MIL",
+            "ANC",
+            "NATIVITY",
+            "DEAR",
+            "DEYE",
+            "DREM",
+            "SEX",
+            "RAC1P",
+        ],
+        target="ESR",
+        target_transform=lambda x: x == 1,
+        group=group_col,
+        preprocess=lambda x: x,
+        # postprocess=lambda x: np.nan_to_num(x, -1),
+    )
+
+    if binarize_group:
+        acs_data = data_source.get_data(states=["MN"], download=True)
         features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
 
         label: pd.Series = labeldf["ESR"].astype(int)
-        group: pd.Series = groupdf["RAC1P"].astype(int) != 1
+        group: pd.Series = groupdf[group_col].astype(int)
+        group.loc[groupdf[group_col] < 45] = 0
+        group.loc[45 <= groupdf[group_col]] = 1
+        group = group.astype(bool)
 
     else:
-        # Remove groups that have too few individuals (arbitrary cut-off at 200)
-        acs_data = pl.from_pandas(
-            data_source.get_data(states=["AL"], download=True)
-        ).filter(~pl.col("RAC1P").is_in([3, 4, 5, 7]))
-        features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data.to_pandas())
-
-        label: pd.Series = labeldf["ESR"].astype(int)
-        group: pd.Series = groupdf["RAC1P"].astype(int)
+        raise NotImplementedError("Only support binary groups for now")
 
     # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
     # RAC1P Character 1
@@ -167,12 +193,26 @@ Dataset = Annotated[
 
 
 def generate_model(
+    base_model_name: str,
     model_name: ModelName,
     model_params: dict[str, Any],
     strategy: ManipulationStrategy,
     strategy_params: dict[str, Any],
 ):
-    base_estimator = tabular_learner("classifier")
+
+    match base_model_name:
+        case "skrub_default" | "skrub":
+            base_estimator = tabular_learner("classifier")
+            sample_weight_name = "histgradientboostingclassifier__sample_weight"
+
+        case "skrub_logistic":
+            base_estimator = tabular_learner(LogisticRegression())
+            sample_weight_name = "logisticregression__sample_weight"
+
+        case _:
+            raise NotImplementedError(
+                f"The base base_model {base_model_name} is not supported"
+            )
 
     match model_name:
         case "unconstrained":
@@ -184,7 +224,7 @@ def generate_model(
             estimator = ExponentiatedGradient(
                 sk.clone(base_estimator),
                 DemographicParity(difference_bound=epsilon),
-                sample_weight_name="histgradientboostingclassifier__sample_weight",
+                sample_weight_name=sample_weight_name,
                 eps=epsilon,
             )
             requires_sensitive_features = "fit"
@@ -225,8 +265,67 @@ def detection_oracle(tpr: float, tnr: float):
     return AuditDetector(tpr, tnr)
 
 
+def compute_metrics(
+    X_queries: pd.DataFrame,
+    y_queries: pd.Series,
+    A_queries: pd.Series,
+    y_pred: np.ndarray,
+    true_audit_queries_mask: np.ndarray,
+) -> dict[str, float | list[float]]:
+    metrics = {}
+    groups = A_queries.unique()
+    groups.sort()
+
+    # The utility as seen by the users
+    metrics["utility_user"] = accuracy_score(
+        y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
+    )
+    # The utility as measured by the auditor
+    metrics["utility_audit"] = accuracy_score(
+        y_queries[true_audit_queries_mask], y_pred[true_audit_queries_mask]
+    )
+    # The per group conditional accuracy as seen by the users
+    metrics["conditional_accuracy_user"] = [
+        accuracy_score(
+            y_queries[~true_audit_queries_mask],
+            y_pred[~true_audit_queries_mask],
+            sample_weight=A_queries[~true_audit_queries_mask] == group,
+        )
+        for group in groups
+    ]
+
+    # The demographic parity as seen by the users
+    metrics["demographic_parity_user"] = float(
+        demographic_parity_difference(
+            y_queries[~true_audit_queries_mask],
+            y_pred[~true_audit_queries_mask],
+            sensitive_features=A_queries[~true_audit_queries_mask],
+        )
+    )
+    # The demographic parity as seen by the auditor
+    metrics["demographic_parity_audit"] = float(
+        demographic_parity_difference(
+            y_queries[true_audit_queries_mask],
+            y_pred[true_audit_queries_mask],
+            sensitive_features=A_queries[true_audit_queries_mask],
+        )
+    )
+    # The per group conditional accuracy as seen by the auditor
+    metrics["conditional_accuracy_user"] = [
+        accuracy_score(
+            y_queries[true_audit_queries_mask],
+            y_pred[true_audit_queries_mask],
+            sample_weight=A_queries[true_audit_queries_mask] == group,
+        )
+        for group in groups
+    ]
+
+    return metrics
+
+
 def run_audit(
     dataset: Dataset = "ACSEmployment",
+    base_model_name: str = "skrub",
     model_name: ModelName = "unconstrained",
     model_params: str = "",
     strategy: ManipulationStrategy = "honest",
@@ -276,6 +375,12 @@ def run_audit(
     A_train = group.loc[train_idx]
 
     assert (
+        A_train.nunique() == group.nunique()
+    ), "There are groups that are not represented in the train data"
+    assert (
+        group.loc[test_idx].nunique() == group.nunique()
+    ), "There are groups that are not represented in the train data"
+    assert (
         len(features) == np.unique(np.concat([train_idx, test_idx, audit_idx])).shape[0]
     )
 
@@ -288,7 +393,7 @@ def run_audit(
     strategy_params_dict = extract_params(strategy_params)
 
     model = generate_model(
-        model_name, model_params_dict, strategy, strategy_params_dict
+        base_model_name, model_name, model_params_dict, strategy, strategy_params_dict
     )
     model.fit(X_train, y_train, A_train)
 
@@ -308,6 +413,9 @@ def run_audit(
         audit_budget,
         seed=seeds[2],
     )
+    assert (
+        A_audit.nunique() == group.nunique()
+    ), "There are groups that are not represented in the audit seed data"
 
     # Generate the requests stream as seen by the platform (a.k.a. audit set + users set)
     X_queries = pd.concat([features.loc[test_idx], X_audit])
@@ -318,7 +426,7 @@ def run_audit(
     true_audit_queries_mask = np.concat(
         [np.zeros(len(test_idx)), np.ones(audit_budget)]
     ).astype(bool)
-    audit_queries_mask = oracle.detect(true_audit_queries_mask.copy(), seeds[3])
+    audit_queries_mask = oracle.detect(true_audit_queries_mask, seeds[3])
 
     # Ask the (potentially manipulated) model to label the queries
     y_pred = model.predict(X_queries, A_queries, audit_queries_mask, seeds[4])
@@ -337,29 +445,8 @@ def run_audit(
         detection_tpr=detection_tpr,
         detection_tnr=detection_tnr,
         entropy=entropy,
-        # The utility as seen by the users
-        utility_user=accuracy_score(
-            y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
-        ),
-        # The utility as measured by the auditor
-        utility_audit=accuracy_score(
-            y_queries[true_audit_queries_mask], y_pred[true_audit_queries_mask]
-        ),
-        # The demographic parity as seen by the users
-        demographic_parity_user=float(
-            demographic_parity_difference(
-                y_queries[~true_audit_queries_mask],
-                y_pred[~true_audit_queries_mask],
-                sensitive_features=A_queries[~true_audit_queries_mask],
-            )
-        ),
-        # The demographic parity as seen by the auditor
-        demographic_parity_audit=float(
-            demographic_parity_difference(
-                y_queries[true_audit_queries_mask],
-                y_pred[true_audit_queries_mask],
-                sensitive_features=A_queries[true_audit_queries_mask],
-            )
+        **compute_metrics(
+            X_queries, y_queries, A_queries, y_pred, true_audit_queries_mask
         ),
     )
 
@@ -370,12 +457,13 @@ def run_audit(
 
 
 @app.command()
-def dev():
+def tradeoff():
     dataset = "ACSEmployment_binarized"
+    base_model = "skrub_logistic"
     audit_budget = 1_000
     n_repetitions = 5
     entropy = 123456789
-    output = Path(f"generated/dev{n_repetitions}_{dataset}.jsonl")
+    output = Path(f"generated/dev{n_repetitions}_{dataset}_linear.jsonl")
     tpr = 1.0
     tnr = 1.0
 
@@ -385,12 +473,15 @@ def dev():
     ]
 
     for entropy, (tpr, tnr) in product(
-        entropies, ((1.0, 1.0), (0.95, 1.0), (1.0, 0.95), (0.95, 0.95), (0.5, 1.0))
+        entropies,
+        ((0.95, 1.0), (1.0, 1.0), (0.5, 1.0)),
+        # entropies, ((1.0, 1.0), (0.95, 1.0), (1.0, 0.95), (0.95, 0.95), (0.5, 1.0))
     ):
         print(entropy, tpr, tnr)
         print("unconstrained")
         run_audit(
             dataset=dataset,
+            base_model_name=base_model,
             model_name="unconstrained",
             strategy="honest",
             detection_tpr=tpr,
@@ -403,6 +494,7 @@ def dev():
         print("model swap")
         run_audit(
             dataset=dataset,
+            base_model_name=base_model,
             model_name="unconstrained",
             strategy="model_swap",
             detection_tpr=tpr,
@@ -417,6 +509,7 @@ def dev():
             print(f"{epsilon:.2f}", end=" ", flush=True)
             run_audit(
                 dataset=dataset,
+                base_model_name=base_model,
                 model_name="unconstrained",
                 strategy="randomized_response",
                 strategy_params={"epsilon": epsilon},  # type: ignore
@@ -433,6 +526,7 @@ def dev():
             print(f"{theta:.2f}", end=" ", flush=True)
             run_audit(
                 dataset=dataset,
+                base_model_name=base_model,
                 model_name="unconstrained",
                 strategy="ROC_mitigation",
                 strategy_params={"theta": theta},  # type: ignore
@@ -450,6 +544,7 @@ def dev():
 
             run_audit(
                 dataset=dataset,
+                base_model_name=base_model,
                 model_name="exponentiated_gradient",
                 model_params={"epsilon": epsilon},  # type: ignore
                 strategy="honest",
@@ -461,6 +556,66 @@ def dev():
             )
         print()
 
+
+@app.command()
+def base_rates():
+    records = []
+    groups = ["SEX", "RAC1P", "AGEP"]
+    data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
+
+    for year in range(2014, 2022):
+        for sensitive_group, state in product(groups, state_list):
+            data_source = ACSDataSource(
+                survey_year=str(year), horizon="1-Year", survey="person"
+            )
+            acs_data = data_source.get_data(states=[state], download=True)
+            ACSEmployment = folktables.BasicProblem(
+                features=[
+                    "AGEP",
+                    "SCHL",
+                    "MAR",
+                    # "RELP", # Not present in 2019
+                    "DIS",
+                    "ESP",
+                    "CIT",
+                    "MIG",
+                    "MIL",
+                    "ANC",
+                    "NATIVITY",
+                    "DEAR",
+                    "DEYE",
+                    "DREM",
+                    "SEX",
+                    "RAC1P",
+                ],
+                target="ESR",
+                target_transform=lambda x: x == 1,
+                group=sensitive_group,
+                preprocess=lambda x: x,
+                # postprocess=lambda x: np.nan_to_num(x, -1),
+            )
+            features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
+
+            records.append(
+                {
+                    "year": year,
+                    "state": state,
+                    "len": len(features),
+                    "group": sensitive_group,
+                    "base_rate": float(
+                        demographic_parity_difference(
+                            y_true=labeldf, y_pred=labeldf, sensitive_features=groupdf
+                        )
+                    ),
+                }
+            )
+            print(records[-1])
+
+        list(
+            map(lambda x: x.unlink(), (Path("./data") / str(year) / "1-Year").glob("*"))
+        )
+
+    pl.from_records(records).write_csv("test.csv")
 
 app.command()(run_audit)
 
