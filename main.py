@@ -2,6 +2,7 @@ import json
 from itertools import product
 from pathlib import Path
 from typing import Annotated, Any
+from functools import cache
 
 import numpy as np
 import pandas as pd
@@ -127,7 +128,7 @@ Dataset = Annotated[
 ]
 
 
-def get_data(dataset: Dataset, binarize: bool = False):
+@cache
     data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
 
     if binarize:
