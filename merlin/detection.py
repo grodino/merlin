@@ -10,27 +10,41 @@ class AuditDetector:
         self.tnr = tnr
 
     def detect(
-        self, audit_queries_mask: np.ndarray, seed: np.random.SeedSequence | None
+        self, audit_queries_mask: np.ndarray, seed: np.random.SeedSequence | None = None
     ) -> np.ndarray:
         rng = np.random.default_rng(seed)
+        result = audit_queries_mask.copy()
 
-        # We assume the given audit queries mask is the ground truth
-        true_negatives = audit_queries_mask == 0
-        true_positives = audit_queries_mask == 1
-
-        # Simulate the false positives.
-        # We first create a binary mask that indicates which previously true
-        # negatives are turned into false positives (resp. which previously true
-        # positive are turned into false negatives)
-        false_positives_mask = rng.choice(
-            [False, True], p=[self.tpr, 1 - self.tpr], size=np.sum(true_negatives)
+        result[audit_queries_mask == True] = rng.choice(
+            [True, False],
+            p=np.array([self.tpr, 1 - self.tpr]),
+            size=np.sum(audit_queries_mask == True),
         )
-        false_negatives_mask = rng.choice(
-            [False, True], p=[self.tnr, 1 - self.tnr], size=np.sum(true_positives)
+        result[audit_queries_mask == False] = rng.choice(
+            [True, False],
+            p=np.array([1 - self.tnr, self.tnr]),
+            size=np.sum(audit_queries_mask == False),
         )
 
-        # Then, we flip the corresponding values
-        audit_queries_mask[true_negatives][false_positives_mask] = 1
-        audit_queries_mask[true_positives][false_negatives_mask] = 0
+        return result
 
-        return audit_queries_mask
+
+def test_detector():
+    seed = np.random.SeedSequence(123456789)
+
+    for tpr in np.linspace(0, 1, 10):
+        for tnr in np.linspace(0, 1, 10):
+            detector = AuditDetector(tpr, tnr)
+            true_audit_queries_mask = np.concat(
+                (np.ones(1_000, dtype=bool), np.zeros(20_000, dtype=bool))
+            )
+            audit_queries_mask = detector.detect(true_audit_queries_mask, seed)
+
+            measured_tpr = np.mean(
+                (audit_queries_mask == True)[true_audit_queries_mask == True]
+            )
+            measured_tnr = np.mean(
+                (audit_queries_mask == False)[true_audit_queries_mask == False]
+            )
+            assert np.isclose(tpr, measured_tpr, atol=0.02)
+            assert np.isclose(tnr, measured_tnr, atol=0.02)
