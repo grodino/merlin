@@ -617,6 +617,87 @@ def base_rates():
 
     pl.from_records(records).write_csv("test.csv")
 
+
+@app.command()
+def dev():
+    dataset = "ACSEmployment_binarized"
+    # base_model = "skrub_logistic"
+    base_model = "skrub"
+    audit_budget = 1_000
+    n_repetitions = 5
+    # n_repetitions = 1
+    entropy = 123456789
+    tnr = 1.0
+    output = Path(f"generated/manipulation{n_repetitions}_{dataset}_{base_model}.jsonl")
+
+    entropies = [
+        random_state(seed)
+        for seed in np.random.SeedSequence(entropy).spawn(n_repetitions)
+    ]
+
+    for entropy, tpr in product(entropies, np.linspace(0, 1.0, endpoint=True, num=5)):
+
+        print("unconstrained")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="honest",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("model swap")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="model_swap",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("manipulation randomized response", end=" ", flush=True)
+        for epsilon in np.linspace(1, 10, num=10):
+            print(f"{epsilon:.2f}", end=" ", flush=True)
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="randomized_response",
+                strategy_params={"epsilon": epsilon},  # type: ignore
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budget=audit_budget,
+                entropy=int(entropy),
+                output=output,
+            )
+        print()
+
+        print("manipulation ROC", end=" ", flush=True)
+        for theta in np.linspace(0.3, 0.6, num=10):
+            print(f"{theta:.2f}", end=" ", flush=True)
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="ROC_mitigation",
+                strategy_params={"theta": theta},  # type: ignore
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budget=audit_budget,
+                entropy=int(entropy),
+                output=output,
+            )
+        print()
+
+
 app.command()(run_audit)
 
 
