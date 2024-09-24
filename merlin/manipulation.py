@@ -213,14 +213,16 @@ class ModelSwap(ManipulatedClassifier):
         y_pred = np.zeros(len(X))
 
         # Output on non audit points come from the unconstrained model
-        y_pred[~audit_queries_mask] = self._predict(
-            X.loc[~audit_queries_mask], sensitive_features.loc[~audit_queries_mask]
-        )
+        if np.sum(~audit_queries_mask) > 0:
+            y_pred[~audit_queries_mask] = self._predict(
+                X.loc[~audit_queries_mask], sensitive_features.loc[~audit_queries_mask]
+            )
 
         # Output on audit points come from the fair model
-        y_pred[audit_queries_mask] = self.fair_estimator.predict(
-            X.loc[audit_queries_mask],
-            sensitive_features=sensitive_features.loc[audit_queries_mask],
-        )
+        if np.sum(audit_queries_mask) > 0:
+            y_pred[audit_queries_mask] = self.fair_estimator.predict(
+                X.loc[audit_queries_mask],
+                sensitive_features=sensitive_features.loc[audit_queries_mask],
+            )
 
         return y_pred
