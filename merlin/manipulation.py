@@ -26,6 +26,10 @@ class ManipulatedClassifier(ABC, BaseEstimator, MetaEstimatorMixin, ClassifierMi
 
         return self
 
+    @property
+    def classes_(self):
+        return self.estimator.classes_
+
     def _predict(self, X, sensitive_features) -> np.ndarray:
         match self.requires_sensitive_features:
             case "predict" | "both":
@@ -163,6 +167,46 @@ class ROCMitigation(ManipulatedClassifier):
         y_pred[(critical_region & sensitive_features).astype(bool)] = 1
         # Always answer no to the non-discriminated group
         y_pred[(critical_region & (~sensitive_features)).astype(bool)] = 0
+
+        return y_pred
+
+
+class AlwaysYes(ManipulatedClassifier):
+    """A binary classifier whose output is always positive"""
+
+    def predict(
+        self,
+        X,
+        sensitive_features=None,
+        audit_queries_mask=None,
+        seed: SeedSequence | None = None,
+    ) -> np.ndarray:
+        assert (
+            len(self.classes_) == 2
+        ), f"{self.__class__} requires binary labels, I was given {self.classes_}"
+
+        y_pred = self._predict(X, sensitive_features)
+        y_pred[audit_queries_mask] = 1
+
+        return y_pred
+
+
+class AlwaysNo(ManipulatedClassifier):
+    """A binary classifier whose output is always negative"""
+
+    def predict(
+        self,
+        X,
+        sensitive_features=None,
+        audit_queries_mask=None,
+        seed: SeedSequence | None = None,
+    ) -> np.ndarray:
+        assert (
+            len(self.classes_) == 2
+        ), f"{self.__class__} requires binary labels, I was given {self.classes_}"
+
+        y_pred = self._predict(X, sensitive_features)
+        y_pred[audit_queries_mask] = 0
 
         return y_pred
 

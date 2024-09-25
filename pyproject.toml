@@ -47,3 +47,7 @@ exclude = ["**/__pycache__", "data", "generated"]
 [tool.pytest.ini_options]
 addopts = "-s"
 log_cli = true
+
+[tool.ruff.lint]
+# Comparison to True/False rule, annoying when working with numpy
+ignore = ["E712"]

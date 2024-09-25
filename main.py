@@ -3,6 +3,7 @@ from itertools import product
 from pathlib import Path
 from typing import Annotated, Any
 from functools import cache
+from time import perf_counter
 
 import folktables
 import numpy as np
@@ -28,6 +29,8 @@ from skrub import tabular_learner
 from merlin.audit import audit_set
 from merlin.detection import AuditDetector
 from merlin.manipulation import (
+    AlwaysNo,
+    AlwaysYes,
     HonestClassifier,
     ModelSwap,
     RandomizedResponse,
@@ -133,7 +136,8 @@ Dataset = Annotated[
 @cache
 def get_data(dataset: Dataset, binarize_group: bool = False):
     data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
-    group_col = "AGEP"
+    # group_col = "AGEP"
+    group_col = "RAC1P"
 
     ACSEmployment = folktables.BasicProblem(
         features=[
@@ -161,18 +165,43 @@ def get_data(dataset: Dataset, binarize_group: bool = False):
         # postprocess=lambda x: np.nan_to_num(x, -1),
     )
 
+    # if binarize_group:
+    #     acs_data = data_source.get_data(states=["MN"], download=True)
+    #     features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
+
+    #     label: pd.Series = labeldf["ESR"].astype(int)
+    #     group: pd.Series = groupdf[group_col].astype(int)
+    #     group.loc[groupdf[group_col] < 45] = 0
+    #     group.loc[45 <= groupdf[group_col]] = 1
+    #     group = group.astype(bool)
+
+    # else:
+    #     raise NotImplementedError("Only support binary groups for now")
+
     if binarize_group:
         acs_data = data_source.get_data(states=["MN"], download=True)
         features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
 
         label: pd.Series = labeldf["ESR"].astype(int)
-        group: pd.Series = groupdf[group_col].astype(int)
-        group.loc[groupdf[group_col] < 45] = 0
-        group.loc[45 <= groupdf[group_col]] = 1
-        group = group.astype(bool)
+        group: pd.Series = groupdf[group_col] != 1
 
     else:
-        raise NotImplementedError("Only support binary groups for now")
+        acs_data = data_source.get_data(states=["MN"], download=True)
+        features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
+
+        label: pd.Series = labeldf["ESR"].astype(int)
+        group: pd.Series = groupdf[group_col].astype(int)
+
+        # Remove groups that have too few representatives
+        n_per_group = group.value_counts()
+        groups_to_remove = n_per_group.loc[n_per_group < 200].index
+        samples_to_remove = group.isin(groups_to_remove)
+
+        features, label, group = (
+            features.loc[~samples_to_remove],
+            label.loc[~samples_to_remove],
+            group[~samples_to_remove],
+        )
 
     # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
     # RAC1P Character 1
@@ -252,6 +281,12 @@ def generate_model(
 
         case "model_swap":
             model = ModelSwap(estimator, requires_sensitive_features)
+
+        case "always_yes":
+            model = AlwaysYes(estimator, requires_sensitive_features)
+
+        case "always_no":
+            model = AlwaysNo(estimator, requires_sensitive_features)
 
         case _:
             raise NotImplementedError(
@@ -395,7 +430,9 @@ def run_audit(
     model = generate_model(
         base_model_name, model_name, model_params_dict, strategy, strategy_params_dict
     )
+    fit_time = perf_counter()
     model.fit(X_train, y_train, A_train)
+    fit_time = perf_counter() - fit_time
 
     ############################################################################
     # GENERATE THE AUDIT DETECTION ORACLE                                      #
@@ -445,6 +482,7 @@ def run_audit(
         detection_tpr=detection_tpr,
         detection_tnr=detection_tnr,
         entropy=entropy,
+        fit_time=fit_time,
         **compute_metrics(
             X_queries, y_queries, A_queries, y_pred, true_audit_queries_mask
         ),
@@ -497,6 +535,32 @@ def tradeoff():
             base_model_name=base_model,
             model_name="unconstrained",
             strategy="model_swap",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("always yes")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="always_yes",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("always no")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="always_no",
             detection_tpr=tpr,
             detection_tnr=tnr,
             audit_budget=audit_budget,
@@ -619,7 +683,7 @@ def base_rates():
 
 
 @app.command()
-def dev():
+def audit_detection():
     dataset = "ACSEmployment_binarized"
     # base_model = "skrub_logistic"
     base_model = "skrub"
@@ -636,7 +700,6 @@ def dev():
     ]
 
     for entropy, tpr in product(entropies, np.linspace(0, 1.0, endpoint=True, num=5)):
-
         print("unconstrained")
         run_audit(
             dataset=dataset,
@@ -656,6 +719,32 @@ def dev():
             base_model_name=base_model,
             model_name="unconstrained",
             strategy="model_swap",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("always yes")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="always_yes",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(entropy),
+            output=output,
+        )
+
+        print("always no")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="always_no",
             detection_tpr=tpr,
             detection_tnr=tnr,
             audit_budget=audit_budget,
@@ -696,6 +785,24 @@ def dev():
                 output=output,
             )
         print()
+
+
+@app.command()
+def dev():
+    from sklearn import set_config
+
+    X, y, A = get_data("ACSIncome", binarize_group=False)
+    model = generate_model(
+        base_model_name="skrub",
+        model_name="unconstrained",
+        model_params={},
+        strategy="honest",
+        strategy_params={},
+    )
+
+    model = model.fit(X, y, sensitive_features=A)
+
+    print(model.classes_)
 
 
 app.command()(run_audit)
