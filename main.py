@@ -23,6 +23,7 @@ from folktables import ACSDataSource, state_list
 from plotly import express as px
 from sklearn.metrics import accuracy_score
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from skrub import tabular_learner
 
@@ -227,15 +228,23 @@ def generate_model(
     model_params: dict[str, Any],
     strategy: ManipulationStrategy,
     strategy_params: dict[str, Any],
+    seed: np.random.SeedSequence,
 ):
 
     match base_model_name:
         case "skrub_default" | "skrub":
-            base_estimator = tabular_learner("classifier")
+            base_estimator = tabular_learner(
+                HistGradientBoostingClassifier(
+                    categorical_features="from_dtype",
+                    random_state=random_state(seed),
+                )
+            )
             sample_weight_name = "histgradientboostingclassifier__sample_weight"
 
         case "skrub_logistic":
-            base_estimator = tabular_learner(LogisticRegression())
+            base_estimator = tabular_learner(
+                LogisticRegression(random_state=random_state(seed))
+            )
             sample_weight_name = "logisticregression__sample_weight"
 
         case _:
@@ -372,7 +381,7 @@ def run_audit(
     output: Path | None = None,
 ):
     AUDIT_SEED_SET_SIZE = 10_000
-    seeds = np.random.SeedSequence(entropy).spawn(5)
+    seeds = iter(np.random.SeedSequence(entropy).spawn(6))
 
     ############################################################################
     # GENERATE THE DATA SPLITS                                                 #
@@ -391,7 +400,7 @@ def run_audit(
     train_test_idx, audit_idx = train_test_split(
         np.arange(len(features)),
         test_size=AUDIT_SEED_SET_SIZE,
-        random_state=random_state(seeds[0]),
+        random_state=random_state(next(seeds)),
         stratify=group.astype(str) + "_" + label.astype(str),
     )
 
@@ -399,7 +408,7 @@ def run_audit(
     train_idx, test_idx = train_test_split(
         train_test_idx,
         test_size=0.3,
-        random_state=random_state(seeds[1]),
+        random_state=random_state(next(seeds)),
         stratify=group.loc[train_test_idx].astype(str)
         + "_"
         + label.loc[train_test_idx].astype(str),
@@ -428,7 +437,12 @@ def run_audit(
     strategy_params_dict = extract_params(strategy_params)
 
     model = generate_model(
-        base_model_name, model_name, model_params_dict, strategy, strategy_params_dict
+        base_model_name,
+        model_name,
+        model_params_dict,
+        strategy,
+        strategy_params_dict,
+        next(seeds),
     )
     fit_time = perf_counter()
     model.fit(X_train, y_train, A_train)
@@ -448,7 +462,7 @@ def run_audit(
         label.loc[audit_idx],
         group.loc[audit_idx],
         audit_budget,
-        seed=seeds[2],
+        seed=next(seeds),
     )
     assert (
         A_audit.nunique() == group.nunique()
@@ -463,10 +477,12 @@ def run_audit(
     true_audit_queries_mask = np.concat(
         [np.zeros(len(test_idx)), np.ones(audit_budget)]
     ).astype(bool)
-    audit_queries_mask = oracle.detect(true_audit_queries_mask, seeds[3])
+    audit_queries_mask = oracle.detect(true_audit_queries_mask, next(seeds))
 
     # Ask the (potentially manipulated) model to label the queries
-    y_pred = model.predict(X_queries, A_queries, audit_queries_mask, seeds[4])
+    inference_time = perf_counter()
+    y_pred = model.predict(X_queries, A_queries, audit_queries_mask, next(seeds))
+    inference_time = perf_counter() - inference_time
 
     ############################################################################
     # EVALUATE AND SAVE THE RESULTS                                            #
@@ -483,6 +499,7 @@ def run_audit(
         detection_tnr=detection_tnr,
         entropy=entropy,
         fit_time=fit_time,
+        inference_time=inference_time,
         **compute_metrics(
             X_queries, y_queries, A_queries, y_pred, true_audit_queries_mask
         ),
@@ -511,9 +528,7 @@ def tradeoff():
     ]
 
     for entropy, (tpr, tnr) in product(
-        entropies,
-        ((0.95, 1.0), (1.0, 1.0), (0.5, 1.0)),
-        # entropies, ((1.0, 1.0), (0.95, 1.0), (1.0, 0.95), (0.95, 0.95), (0.5, 1.0))
+        entropies, ((1.0, 1.0), (0.95, 1.0), (1.0, 0.95), (0.95, 0.95), (0.5, 1.0))
     ):
         print(entropy, tpr, tnr)
         print("unconstrained")
@@ -798,6 +813,7 @@ def dev():
         model_params={},
         strategy="honest",
         strategy_params={},
+        seed=np.random.SeedSequence(123456789),
     )
 
     model = model.fit(X, y, sensitive_features=A)

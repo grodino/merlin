@@ -13,9 +13,11 @@ class ManipulatedClassifier(ABC, BaseEstimator, MetaEstimatorMixin, ClassifierMi
         self,
         estimator,
         requires_sensitive_features: Literal["fit", "predict", "both"] | None = None,
+        random_state: int | np.random.RandomState | None = None,
     ) -> None:
         self.estimator = estimator
         self.requires_sensitive_features = requires_sensitive_features
+        self.random_state = random_state
 
     def fit(self, X, y, sensitive_features=None) -> Self:
         match self.requires_sensitive_features:
