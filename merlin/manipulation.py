@@ -111,7 +111,8 @@ class RandomizedResponse(ManipulatedClassifier):
         )
 
         # Redraw a label (with uniform probability) for those we decided not to keep
-        y_pred[audit_queries_mask][~keep_label] = rng.choice(
+        responses_to_modify = np.where(audit_queries_mask)[0][~keep_label]
+        y_pred[responses_to_modify] = rng.choice(
             np.unique(y_pred), size=np.sum(~keep_label)
         )
 
