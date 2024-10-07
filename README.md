@@ -11,5 +11,5 @@
 
 2. Run the experiments (): 
    ```bash
-   pixi run main.py dev
+   pixi run python main.py dev
    ```
