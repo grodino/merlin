@@ -17,6 +17,10 @@ dependencies = [
     # Notebook dependencies
     "ipykernel",
     "nbformat",
+    "tqdm",
+    "kagglehub",
+    "torch",
+    "torchvision"
 ]
 
 [project.optional-dependencies]
