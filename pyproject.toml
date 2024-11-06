@@ -20,7 +20,8 @@ dependencies = [
     "tqdm",
     "kagglehub",
     "torch",
-    "torchvision"
+    "torchvision",
+    "wandb"
 ]
 
 [project.optional-dependencies]
