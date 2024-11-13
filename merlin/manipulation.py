@@ -167,6 +167,66 @@ class ROCMitigation(ManipulatedClassifier):
         critical_region = max_values <= self.theta
 
         # Always answer yes to the discriminated group
+        y_pred[
+            audit_queries_mask & (critical_region & sensitive_features).astype(bool)
+        ] = 1
+        # Always answer no to the non-discriminated group
+        y_pred[
+            audit_queries_mask & (critical_region & (~sensitive_features)).astype(bool)
+        ] = 0
+
+        return y_pred
+
+
+class MultiROCMitigation(ManipulatedClassifier):
+    """
+    Balance the positive answers for all group by flipping the answers on the
+    samples with highest predictive entropy. Inspired from ROC mitigation (which
+    works only for two classes).
+    """
+
+    def __init__(
+        self,
+        estimator,
+        theta,
+        requires_sensitive_features: (
+            None | Literal["fit"] | Literal["predict"] | Literal["both"]
+        ) = None,
+    ) -> None:
+        super().__init__(estimator, requires_sensitive_features)
+        self.theta = theta
+
+    def predict(
+        self,
+        X,
+        sensitive_features=None,
+        audit_queries_mask=None,
+        seed: SeedSequence | None = None,
+    ) -> np.ndarray:
+
+        assert (
+            audit_queries_mask is not None
+        ), f"{self.__class__.__name__} requires the audit queries mask"
+        assert (
+            sensitive_features is not None
+        ), f"{self.__class__.__name__} requires the sensitve features at inference"
+
+        # Output of the real model
+        y_pred_proba = self._predict_proba(X, sensitive_features)
+        n_samples, n_classes = y_pred_proba.shape
+
+        # Compute the predictive entropy
+        y_pred_entropy = -np.sum(y_pred_proba * np.log2(y_pred_proba), axis=1)
+
+        # Get the labels from the probabilities
+        y_pred = y_pred_proba.argmax(axis=1)
+
+        # Select the labels we want to flip. We select the ones which have a low
+        # confidence (a.k.a. high entropy of the class distribution)
+        max_values = np.maximum(y_pred_proba[:, 0], y_pred_proba[:, 1])
+        critical_region = max_values <= self.theta
+
+        # Always answer yes to the discriminated group
         y_pred[(critical_region & sensitive_features).astype(bool)] = 1
         # Always answer no to the non-discriminated group
         y_pred[(critical_region & (~sensitive_features)).astype(bool)] = 0
@@ -253,9 +313,6 @@ class ModelSwap(ManipulatedClassifier):
         assert (
             sensitive_features is not None
         ), f"{self.__class__.__name__} requires the sensitve features at inference"
-        assert (
-            sensitive_features.dtype == np.bool
-        ), f"{self.__class__.__name__} requires binary sensitve features"
 
         y_pred = np.zeros(len(X))
 
