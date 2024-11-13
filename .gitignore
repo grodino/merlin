@@ -6,7 +6,7 @@
 
 # Data and results directories
 data/
-generated/
+generated*/
 
 # reports (for now, might un-ignore later)
 reports/
