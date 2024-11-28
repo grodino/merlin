@@ -17,7 +17,7 @@ def audit_set(
         group,
         train_size=budget,
         random_state=random_state(seed),
-        stratify=group,  # Select the same number of samples per group
+        # stratify=group,  # Select the same number of samples per group
     )
 
     return X_audit, y_audit, A_audit
