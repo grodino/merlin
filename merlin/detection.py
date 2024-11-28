@@ -12,8 +12,12 @@ class AuditDetector:
     def detect(
         self, audit_queries_mask: np.ndarray, seed: np.random.SeedSequence | None = None
     ) -> np.ndarray:
+
         rng = np.random.default_rng(seed)
         result = audit_queries_mask.copy()
+
+        if (self.tpr, self.tnr) == (1.0, 1.0):
+            return result
 
         result[audit_queries_mask == True] = rng.choice(
             [True, False],
@@ -30,6 +34,9 @@ class AuditDetector:
 
 
 def test_detector():
+    """Test whether the observed true/false positive rates match the requested
+    rates"""
+
     seed = np.random.SeedSequence(123456789)
 
     for tpr in np.linspace(0, 1, 10):

@@ -1,5 +1,6 @@
 import json
 from itertools import product
+from math import sqrt
 from pathlib import Path
 from typing import Annotated, Any
 from functools import cache
@@ -219,6 +220,8 @@ def get_data(dataset: Dataset, binarize_group: bool = False):
     # 8 .Some Other Race alone
     # 9 .Two or More Races²
 
+    print(f"dataset size: {features.shape[0]}")
+
     return features, label, group
 
 
@@ -230,6 +233,7 @@ def generate_model(
     strategy_params: dict[str, Any],
     seed: np.random.SeedSequence,
 ):
+    """Initialize the model that will be trained on the platform's data."""
 
     match base_model_name:
         case "skrub_default" | "skrub":
@@ -252,10 +256,15 @@ def generate_model(
                 f"The base base_model {base_model_name} is not supported"
             )
 
+    manipulation_kwargs = {
+        "requires_sensitive_features": None,
+        "predict_requires_randomstate": False,
+        "fit_requires_randomstate": False,
+    }
+
     match model_name:
         case "unconstrained":
             estimator = sk.clone(base_estimator)
-            requires_sensitive_features = None
 
         case "exponentiated_gradient":
             epsilon = model_params["epsilon"]
@@ -265,37 +274,39 @@ def generate_model(
                 sample_weight_name=sample_weight_name,
                 eps=epsilon,
             )
-            requires_sensitive_features = "fit"
+            manipulation_kwargs["requires_sensitive_features"] = "fit"
+            manipulation_kwargs["predict_requires_randomstate"] = True
 
         case "threshold_optimizer":
             estimator = ThresholdOptimizer(
                 estimator=sk.clone(base_estimator), constraints="demographic_parity"
             )
-            requires_sensitive_features = "both"
+            manipulation_kwargs["requires_sensitive_features"] = "both"
+            manipulation_kwargs["predict_requires_randomstate"] = True
 
         case _:
             raise NotImplementedError(f"The model {model_name} is not supported")
 
     match strategy:
         case "honest":
-            model = HonestClassifier(estimator, requires_sensitive_features)
+            model = HonestClassifier(estimator, **manipulation_kwargs)
 
         case "randomized_response":
             epsilon = strategy_params["epsilon"]
-            model = RandomizedResponse(estimator, epsilon, requires_sensitive_features)
+            model = RandomizedResponse(estimator, epsilon, **manipulation_kwargs)
 
         case "ROC_mitigation":
             theta = strategy_params["theta"]
-            model = ROCMitigation(estimator, theta, requires_sensitive_features)
+            model = ROCMitigation(estimator, theta, **manipulation_kwargs)
 
         case "model_swap":
-            model = ModelSwap(estimator, requires_sensitive_features)
+            model = ModelSwap(estimator, **manipulation_kwargs)
 
         case "always_yes":
-            model = AlwaysYes(estimator, requires_sensitive_features)
+            model = AlwaysYes(estimator, **manipulation_kwargs)
 
         case "always_no":
-            model = AlwaysNo(estimator, requires_sensitive_features)
+            model = AlwaysNo(estimator, **manipulation_kwargs)
 
         case _:
             raise NotImplementedError(
@@ -316,6 +327,8 @@ def compute_metrics(
     y_pred: np.ndarray,
     true_audit_queries_mask: np.ndarray,
 ) -> dict[str, float | list[float]]:
+    """Compute different metrics related to the performance and fairness of the
+    model."""
     metrics = {}
     groups = A_queries.unique()
     groups.sort()
@@ -378,10 +391,29 @@ def run_audit(
     detection_tpr: float = 1.0,
     detection_tnr: float = 1.0,
     entropy: int = 123456789,
+    override_seeds: dict[str, np.random.SeedSequence] | None = None,
     output: Path | None = None,
 ):
+    """Run an audit simulation.
+
+    1. Creates the audit/platform data separation
+    2. Implements the platform model training
+    3. Simulates the audit-points detection mechanism used by the platform
+    4. Samples audit points and simulate the auditor querying the platform.
+    5. Compute the true/estimated fairness/performance metrics and audit manipulation detection
+    """
     AUDIT_SEED_SET_SIZE = 10_000
-    seeds = iter(np.random.SeedSequence(entropy).spawn(6))
+    randomness = iter(np.random.SeedSequence(entropy).spawn(6))
+    seeds = {
+        "data_split": next(randomness),
+        "train_test": next(randomness),
+        "model": next(randomness),
+        "audit_set": next(randomness),
+        "audit_detector": next(randomness),
+        "model_inference": next(randomness),
+    }
+    if override_seeds:
+        seeds.update(override_seeds)
 
     ############################################################################
     # GENERATE THE DATA SPLITS                                                 #
@@ -400,7 +432,7 @@ def run_audit(
     train_test_idx, audit_idx = train_test_split(
         np.arange(len(features)),
         test_size=AUDIT_SEED_SET_SIZE,
-        random_state=random_state(next(seeds)),
+        random_state=random_state(seeds["data_split"]),
         stratify=group.astype(str) + "_" + label.astype(str),
     )
 
@@ -408,7 +440,7 @@ def run_audit(
     train_idx, test_idx = train_test_split(
         train_test_idx,
         test_size=0.3,
-        random_state=random_state(next(seeds)),
+        random_state=random_state(seeds["train_test"]),
         stratify=group.loc[train_test_idx].astype(str)
         + "_"
         + label.loc[train_test_idx].astype(str),
@@ -429,7 +461,7 @@ def run_audit(
     )
 
     ############################################################################
-    # GENERATE AND TRAIN THE MANIPULMATED MODEL                                #
+    # GENERATE AND TRAIN THE MANIPULATED MODEL                                 #
     ############################################################################
     # Extract the model params from the params string. For now, we assume that
     # there are only float params. Should be changed.
@@ -442,7 +474,7 @@ def run_audit(
         model_params_dict,
         strategy,
         strategy_params_dict,
-        next(seeds),
+        seeds["model"],
     )
     fit_time = perf_counter()
     model.fit(X_train, y_train, A_train)
@@ -462,7 +494,7 @@ def run_audit(
         label.loc[audit_idx],
         group.loc[audit_idx],
         audit_budget,
-        seed=next(seeds),
+        seed=seeds["audit_set"],
     )
     assert (
         A_audit.nunique() == group.nunique()
@@ -477,11 +509,13 @@ def run_audit(
     true_audit_queries_mask = np.concat(
         [np.zeros(len(test_idx)), np.ones(audit_budget)]
     ).astype(bool)
-    audit_queries_mask = oracle.detect(true_audit_queries_mask, next(seeds))
+    audit_queries_mask = oracle.detect(true_audit_queries_mask, seeds["audit_detector"])
 
     # Ask the (potentially manipulated) model to label the queries
     inference_time = perf_counter()
-    y_pred = model.predict(X_queries, A_queries, audit_queries_mask, next(seeds))
+    y_pred = model.predict(
+        X_queries, A_queries, audit_queries_mask, random_state(seeds["model_inference"])
+    )
     inference_time = perf_counter() - inference_time
 
     ############################################################################
@@ -512,134 +546,13 @@ def run_audit(
 
 
 @app.command()
-def tradeoff():
-    dataset = "ACSEmployment_binarized"
-    base_model = "skrub_logistic"
-    audit_budget = 1_000
-    n_repetitions = 5
-    entropy = 123456789
-    output = Path(f"generated/dev{n_repetitions}_{dataset}_linear.jsonl")
-    tpr = 1.0
-    tnr = 1.0
-
-    entropies = [
-        random_state(seed)
-        for seed in np.random.SeedSequence(entropy).spawn(n_repetitions)
-    ]
-
-    for entropy, (tpr, tnr) in product(
-        entropies, ((1.0, 1.0), (0.95, 1.0), (1.0, 0.95), (0.95, 0.95), (0.5, 1.0))
-    ):
-        print(entropy, tpr, tnr)
-        print("unconstrained")
-        run_audit(
-            dataset=dataset,
-            base_model_name=base_model,
-            model_name="unconstrained",
-            strategy="honest",
-            detection_tpr=tpr,
-            detection_tnr=tnr,
-            audit_budget=audit_budget,
-            entropy=int(entropy),
-            output=output,
-        )
-
-        print("model swap")
-        run_audit(
-            dataset=dataset,
-            base_model_name=base_model,
-            model_name="unconstrained",
-            strategy="model_swap",
-            detection_tpr=tpr,
-            detection_tnr=tnr,
-            audit_budget=audit_budget,
-            entropy=int(entropy),
-            output=output,
-        )
-
-        print("always yes")
-        run_audit(
-            dataset=dataset,
-            base_model_name=base_model,
-            model_name="unconstrained",
-            strategy="always_yes",
-            detection_tpr=tpr,
-            detection_tnr=tnr,
-            audit_budget=audit_budget,
-            entropy=int(entropy),
-            output=output,
-        )
-
-        print("always no")
-        run_audit(
-            dataset=dataset,
-            base_model_name=base_model,
-            model_name="unconstrained",
-            strategy="always_no",
-            detection_tpr=tpr,
-            detection_tnr=tnr,
-            audit_budget=audit_budget,
-            entropy=int(entropy),
-            output=output,
-        )
-
-        print("manipulation randomized response", end=" ", flush=True)
-        for epsilon in np.linspace(1, 10, num=10):
-            print(f"{epsilon:.2f}", end=" ", flush=True)
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="randomized_response",
-                strategy_params={"epsilon": epsilon},  # type: ignore
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budget=audit_budget,
-                entropy=int(entropy),
-                output=output,
-            )
-        print()
-
-        print("manipulation ROC", end=" ", flush=True)
-        for theta in np.linspace(0.3, 0.6, num=10):
-            print(f"{theta:.2f}", end=" ", flush=True)
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="ROC_mitigation",
-                strategy_params={"theta": theta},  # type: ignore
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budget=audit_budget,
-                entropy=int(entropy),
-                output=output,
-            )
-        print()
-
-        print("fair model", end=" ", flush=True)
-        for epsilon in np.linspace(0.001, 0.1, num=10):
-            print(f"{epsilon:.2f}", end=" ", flush=True)
-
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="exponentiated_gradient",
-                model_params={"epsilon": epsilon},  # type: ignore
-                strategy="honest",
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budget=audit_budget,
-                entropy=int(entropy),
-                output=output,
-            )
-        print()
-
-
-@app.command()
 def base_rates():
+    """Compute the demographic parity on the entire dataset for all sensitive
+    groups in the different states."""
+
     records = []
     groups = ["SEX", "RAC1P", "AGEP"]
+    target = "ESR"
     data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
 
     for year in range(2014, 2022):
@@ -667,7 +580,7 @@ def base_rates():
                     "SEX",
                     "RAC1P",
                 ],
-                target="ESR",
+                target=target,
                 target_transform=lambda x: x == 1,
                 group=sensitive_group,
                 preprocess=lambda x: x,
@@ -690,6 +603,7 @@ def base_rates():
             )
             print(records[-1])
 
+        # Delete the data source to save space
         list(
             map(lambda x: x.unlink(), (Path("./data") / str(year) / "1-Year").glob("*"))
         )
@@ -699,12 +613,15 @@ def base_rates():
 
 @app.command()
 def audit_detection():
+    """Evaluate the effect of the platform's auditor-detector performance on the
+    auditor's estimate"""
+
     dataset = "ACSEmployment_binarized"
     # base_model = "skrub_logistic"
     base_model = "skrub"
     audit_budget = 1_000
-    n_repetitions = 5
-    # n_repetitions = 1
+    # n_repetitions = 5
+    n_repetitions = 1
     entropy = 123456789
     tnr = 1.0
     output = Path(f"generated/manipulation{n_repetitions}_{dataset}_{base_model}.jsonl")
@@ -803,6 +720,139 @@ def audit_detection():
 
 
 @app.command()
+def manipulation_stealthiness():
+    """Plot how much the un-fairness was lowered against how many points were
+    changed"""
+
+    dataset = "ACSEmployment_binarized"
+    # base_model = "skrub_logistic"
+    base_model = "skrub"
+    audit_budget = 1_000
+    # n_repetitions = 15
+    n_repetitions = 5
+    # n_repetitions = 1
+    entropy = 12345678
+    tnr = 1.0
+    tpr = 1.0
+    output = Path(f"generated/stealthiness{n_repetitions}_{dataset}_{base_model}.jsonl")
+
+    # Fix the randomness for everything except the audit_set selection
+    seed = np.random.SeedSequence(entropy)
+    override_seeds = {
+        "data_split": seed.spawn(1)[0],
+        "train_test": seed.spawn(1)[0],
+        # "model": seed.spawn(1)[0],
+        # "model_inference": seed.spawn(1)[0],
+        # "audit_detector": seed.spawn(1)[0],
+        # "audit_set": seed.spawn(1)[0],
+    }
+
+    for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
+
+        print("honest unconstrained")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="honest",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(random_state(seed)),
+            override_seeds=override_seeds,
+            output=output,
+        )
+
+        print("model swap")
+        run_audit(
+            dataset=dataset,
+            base_model_name=base_model,
+            model_name="unconstrained",
+            strategy="model_swap",
+            detection_tpr=tpr,
+            detection_tnr=tnr,
+            audit_budget=audit_budget,
+            entropy=int(random_state(seed)),
+            override_seeds=override_seeds,
+            output=output,
+        )
+
+        print("manipulation ROC", end=" ", flush=True)
+        for theta in np.linspace(0.5, 0.6, num=30):
+            print(f"{theta:.2f}", end=" ", flush=True)
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="ROC_mitigation",
+                strategy_params={"theta": theta},  # type: ignore
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budget=audit_budget,
+                entropy=int(random_state(seed)),
+                override_seeds=override_seeds,
+                output=output,
+            )
+        print()
+
+        print("manipulation randomized response", end=" ", flush=True)
+        for epsilon in np.linspace(1, 10, num=10):
+            print(f"{epsilon:.2f}", end=" ", flush=True)
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="randomized_response",
+                strategy_params={"epsilon": epsilon},  # type: ignore
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budget=audit_budget,
+                entropy=int(entropy),
+                output=output,
+            )
+        print()
+
+    params = [
+        "dataset",
+        "model_name",
+        # "model_params",
+        "strategy",
+        "strategy_params",
+        "audit_budget",
+        "detection_tpr",
+        "detection_tnr",
+        # "entropy",
+    ]
+    records = (
+        pl.read_ndjson(output)
+        .select(pl.all().exclude("model_params"))
+        .with_columns(auditset_hamming=1 - pl.col("utility_audit"))
+        .group_by(params)
+        .agg(
+            pl.all().mean(),
+            pl.all().std().name.suffix("_std"),
+        )
+        .with_columns(
+            pl.col("demographic_parity_audit_std") / sqrt(n_repetitions),
+            pl.col("auditset_hamming_std") / sqrt(n_repetitions),
+            pl.col("strategy_params").struct.json_encode(),
+        )
+    )
+    print(records)
+
+    fig = px.scatter(
+        records,
+        x="auditset_hamming",
+        y="demographic_parity_audit",
+        color="strategy",
+        # error_x="auditset_hamming_std",
+        error_y="demographic_parity_audit_std",
+        hover_data=["strategy_params"],
+    )
+    fig.show()
+
+
+@app.command()
 def dev():
     from sklearn import set_config
 
@@ -821,7 +871,7 @@ def dev():
     print(model.classes_)
 
 
-app.command()(run_audit)
+# app.command()(run_audit)
 
 
 if __name__ == "__main__":
