@@ -1,5 +1,8 @@
 from typing import Any
+
 import numpy as np
+from numpy.random import SeedSequence
+from numpy.typing import ArrayLike
 
 
 def random_state(seed: np.random.SeedSequence) -> np.int32:
@@ -29,3 +32,32 @@ def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
         params[key.strip()] = float(value.strip())
 
     return params
+
+
+def subsample_mask(
+    mask: np.ndarray,
+    num: int,
+    seed: int | SeedSequence | None = None,
+    weight: np.ndarray | None = None,
+) -> np.ndarray:
+    """Only keep at most n true values (choosen at random) in the mask."""
+
+    rng = np.random.default_rng(seed)
+    # Number of positive mask values to remove
+    to_remove = max(0, np.sum(mask) - num)
+
+    # Choose `to_remove` positive mask values at random if no weights were given
+    # or taking the samples with highest weight
+    if weight is not None:
+        # Sort the weights of the positive mask values in increasing order
+        sorted_idx = np.argsort(weight[mask])
+
+        # Remove the `to_remove` positive points with smallest weights from the mask
+        remove = np.nonzero(mask)[0][sorted_idx[:to_remove]]
+    else:
+        remove = rng.choice(np.nonzero(mask)[0], size=to_remove, replace=False)
+
+    # Set those mask values to 0
+    mask[remove] = False
+
+    return mask

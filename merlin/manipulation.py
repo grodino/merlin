@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import Literal, Self
 
+import ot
 import numpy as np
-from fairlearn.postprocessing._threshold_optimizer import ThresholdOptimizer
+import cvxpy as cp
+from fairlearn.postprocessing import ThresholdOptimizer
 from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin
+
+from merlin.utils import subsample_mask
 
 
 class ManipulatedClassifier(ABC, BaseEstimator, MetaEstimatorMixin, ClassifierMixin):
@@ -301,5 +305,139 @@ class ModelSwap(ManipulatedClassifier):
                 sensitive_features=sensitive_features.loc[audit_queries_mask],
                 random_state=random_state,
             )
+
+        return y_pred
+
+
+class LinearRelaxation(ManipulatedClassifier):
+    """Uses an linear relaxation of the fairness constraint to transport the
+    scores to the closest fair scores"""
+
+    def __init__(self, estimator, tolerated_unfairness: float, **kwargs) -> None:
+        super().__init__(estimator, **kwargs)
+        self.tolerated_unfairness = tolerated_unfairness
+
+    def predict(
+        self, X, sensitive_features, audit_queries_mask, random_state=None
+    ) -> np.ndarray:
+
+        y_proba = self._predict_proba(
+            X, sensitive_features=sensitive_features, random_state=random_state
+        )
+        y_pred = y_proba.argmax(-1)
+
+        # Output on audit points are manipulated
+        if np.sum(audit_queries_mask) > 0:
+            y = y_proba[audit_queries_mask][:, 1]
+
+            (n_samples,) = y.shape
+            A = (sensitive_features.loc[audit_queries_mask] == 1).to_numpy()
+            g_fair = (1 / np.sum(A == 1)) * (A == 1) - (1 / np.sum(A == 0)) * (A == 0)
+
+            scores = cp.Variable(n_samples)
+            prob = cp.Problem(
+                cp.Minimize(
+                    -cp.vdot(y, cp.log(scores)) - cp.vdot(1 - y, cp.log(1 - scores))
+                ),
+                [
+                    cp.abs(cp.vdot(g_fair, scores)) <= self.tolerated_unfairness,
+                    0 <= scores,
+                    scores <= 1,
+                ],
+            )
+            prob.solve()
+
+            y_pred[audit_queries_mask] = (scores.value > 0.5).astype(int)
+
+        return y_pred
+
+
+class LabelTransport(ManipulatedClassifier):
+    """Transports the label distribution to the barycenter of the per-sensitive
+    attribute label distributions."""
+
+    def __init__(self, estimator, tolerated_unfairness: float, **kwargs) -> None:
+        super().__init__(estimator, **kwargs)
+        self.tolerated_unfairness = tolerated_unfairness
+
+    def predict(
+        self, X, sensitive_features, audit_queries_mask, random_state=None
+    ) -> np.ndarray:
+        y_proba = self._predict_proba(
+            X, sensitive_features=sensitive_features, random_state=random_state
+        )
+        y_pred = y_proba.argmax(-1)
+
+        # Output on audit points are manipulated
+        if np.sum(audit_queries_mask) > 0:
+            y = y_pred[audit_queries_mask]
+            A = sensitive_features.loc[audit_queries_mask].to_numpy()
+
+            # Compute the marginal score distributions
+            p_y_pos = np.mean(y[A == 1][:, None] == [0, 1], axis=0)
+            p_y_neg = np.mean(y[A == 0][:, None] == [0, 1], axis=0)
+            marginals = np.vstack((p_y_pos, p_y_neg)).T
+
+            # Count the number of points with positive (reps. negative) sensitive attribute
+            n_pos = np.sum(A == 1)
+            n_neg = np.sum(A == 0)
+
+            # The cost of flipping a label is 0 if no flip or 1 if flip
+            cost = 1 - np.eye(2)
+
+            # The weights are the proportions of the two sensitive attributes
+            weights = np.mean(A[:, None] == [0, 1], axis=0)
+
+            # Compute the barycenter of the marginals (weighted by the
+            # proportion of their respective sensitive attribute value)
+            bary_wass = ot.bregman.barycenter(
+                marginals, cost, reg=1e-2, weights=weights
+            )
+
+            # Compute the transport plan. The plan is a 2x2 matrix which
+            # describes how many (rather which proportion) labels to flip (or
+            # not). The row denotes the orignal label y_i, the column describes
+            # the target label y_j and the value corresponds to the proportion
+            # of points with labels y_i to assign label y_j.
+            #
+            # Note : support (a.k.a. the location of the diracs) must be floats,
+            # otherwise the plan is an integer (and everything is null...)
+            support = np.array([0.0, 1.0])
+            plan_pos = ot.emd_1d(
+                support, support, p_y_pos, bary_wass, metric="minkowski"
+            )
+            plan_neg = ot.emd_1d(
+                support, support, p_y_neg, bary_wass, metric="minkowski"
+            )
+
+            if self.tolerated_unfairness > 0.0:
+                alpha = 1 - self.tolerated_unfairness
+
+                plan_pos = (1 - alpha) * np.eye(2) + alpha * plan_pos
+                plan_neg = (1 - alpha) * np.eye(2) + alpha * plan_neg
+
+            # To get back the number of points to flip, we un-normalize the
+            # transport plan.
+            n_flips_pos = np.round(n_pos * plan_pos)
+            n_flips_neg = np.round(n_neg * plan_neg)
+
+            y_new = y.copy()
+            rs = self.random_state
+            weight = np.abs(
+                y_proba[audit_queries_mask][:, 0] - y_proba[audit_queries_mask][:, 1]
+            )
+
+            # Flip the points based on the transport plan
+            for attr_value, n_flips in zip([0, 1], [n_flips_neg, n_flips_pos]):
+                flip_to_1 = subsample_mask(
+                    (A == attr_value) & (y == 0), int(n_flips[0, 1]), rs, weight=weight
+                )
+                flip_to_0 = subsample_mask(
+                    (A == attr_value) & (y == 1), int(n_flips[1, 0]), rs, weight=weight
+                )
+                y_new[flip_to_0] = 0
+                y_new[flip_to_1] = 1
+
+            y_pred[audit_queries_mask] = y_new
 
         return y_pred

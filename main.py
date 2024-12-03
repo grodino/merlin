@@ -34,9 +34,11 @@ from merlin.manipulation import (
     AlwaysNo,
     AlwaysYes,
     HonestClassifier,
+    LinearRelaxation,
     ModelSwap,
     RandomizedResponse,
     ROCMitigation,
+    LabelTransport,
 )
 from merlin.utils import extract_params, random_state
 
@@ -307,6 +309,18 @@ def generate_model(
 
         case "always_no":
             model = AlwaysNo(estimator, **manipulation_kwargs)
+
+        case "linear_relaxation":
+            tolerated_unfairness = strategy_params["tolerated_unfairness"]
+            model = LinearRelaxation(
+                estimator, tolerated_unfairness, **manipulation_kwargs
+            )
+
+        case "label_transport":
+            tolerated_unfairness = strategy_params["tolerated_unfairness"]
+            model = LabelTransport(
+                estimator, tolerated_unfairness, **manipulation_kwargs
+            )
 
         case _:
             raise NotImplementedError(
@@ -736,19 +750,20 @@ def manipulation_stealthiness():
     tpr = 1.0
     output = Path(f"generated/stealthiness{n_repetitions}_{dataset}_{base_model}.jsonl")
 
+    output.unlink(missing_ok=True)
+
     # Fix the randomness for everything except the audit_set selection
     seed = np.random.SeedSequence(entropy)
     override_seeds = {
         "data_split": seed.spawn(1)[0],
         "train_test": seed.spawn(1)[0],
-        # "model": seed.spawn(1)[0],
-        # "model_inference": seed.spawn(1)[0],
-        # "audit_detector": seed.spawn(1)[0],
+        "model": seed.spawn(1)[0],
+        "model_inference": seed.spawn(1)[0],
+        "audit_detector": seed.spawn(1)[0],
         # "audit_set": seed.spawn(1)[0],
     }
 
     for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
-
         print("honest unconstrained")
         run_audit(
             dataset=dataset,
@@ -777,8 +792,44 @@ def manipulation_stealthiness():
             output=output,
         )
 
+        print("linear relaxation", end=" ", flush=True)
+        for tolerated_unfairness in [0.0] + np.logspace(-3, -1, num=10).tolist():
+            print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="linear_relaxation",
+                strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budget=audit_budget,
+                entropy=int(random_state(seed)),
+                override_seeds=override_seeds,
+                output=output,
+            )
+        print()
+
+        print("score transport", end=" ", flush=True)
+        for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
+            print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="label_transport",
+                strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budget=audit_budget,
+                entropy=int(random_state(seed)),
+                override_seeds=override_seeds,
+                output=output,
+            )
+        print()
+
         print("manipulation ROC", end=" ", flush=True)
-        for theta in np.linspace(0.5, 0.6, num=30):
+        for theta in np.linspace(0.5, 0.6, num=10):
             print(f"{theta:.2f}", end=" ", flush=True)
             run_audit(
                 dataset=dataset,
@@ -791,23 +842,6 @@ def manipulation_stealthiness():
                 audit_budget=audit_budget,
                 entropy=int(random_state(seed)),
                 override_seeds=override_seeds,
-                output=output,
-            )
-        print()
-
-        print("manipulation randomized response", end=" ", flush=True)
-        for epsilon in np.linspace(1, 10, num=10):
-            print(f"{epsilon:.2f}", end=" ", flush=True)
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="randomized_response",
-                strategy_params={"epsilon": epsilon},  # type: ignore
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budget=audit_budget,
-                entropy=int(entropy),
                 output=output,
             )
         print()
@@ -837,15 +871,23 @@ def manipulation_stealthiness():
             pl.col("auditset_hamming_std") / sqrt(n_repetitions),
             pl.col("strategy_params").struct.json_encode(),
         )
+        .sort("strategy")
     )
-    print(records)
+
+    records.select(
+        "strategy",
+        "strategy_params",
+        "demographic_parity_audit",
+        "auditset_hamming",
+    ).write_csv("generated/test.csv")
 
     fig = px.scatter(
         records,
         x="auditset_hamming",
         y="demographic_parity_audit",
         color="strategy",
-        # error_x="auditset_hamming_std",
+        category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
+        error_x="auditset_hamming_std",
         error_y="demographic_parity_audit_std",
         hover_data=["strategy_params"],
     )
