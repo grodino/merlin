@@ -19,9 +19,7 @@ dependencies = [
     "nbformat",
     "tqdm",
     "kagglehub",
-    "torch",
-    "torchvision",
-    "wandb"
+    "wandb",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +27,7 @@ test = ["pytest"]
 
 [tool.pixi.project]
 channels = ["conda-forge"]
-platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
 
 [tool.pixi.pypi-dependencies]
 fairlearn = { git = "https://github.com/fairlearn/fairlearn/" }
@@ -43,6 +41,12 @@ main = "python main.py"
 
 [tool.pixi.feature.test.tasks]
 test = "pytest"
+
+[tool.pixi.dependencies]
+pot = ">=0.9.5"
+pytorch = ">=2.5.1,<3"
+torchvision = ">=0.20.1,<0.21"
+cvxpy = ">=1.5.3,<2"
 
 [tool.pyright]
 venvPath = "./.pixi/envs/"
