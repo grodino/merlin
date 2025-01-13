@@ -28,7 +28,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from skrub import tabular_learner
 
-from merlin.audit import audit_set
+from merlin.audit import audit_set, demographic_parity
 from merlin.detection import AuditDetector
 from merlin.manipulation import (
     AlwaysNo,
@@ -339,10 +339,12 @@ def compute_metrics(
     y_queries: pd.Series,
     A_queries: pd.Series,
     y_pred: np.ndarray,
+    y_pred_no_manipulation: np.ndarray,
     true_audit_queries_mask: np.ndarray,
 ) -> dict[str, float | list[float]]:
     """Compute different metrics related to the performance and fairness of the
     model."""
+
     metrics = {}
     groups = A_queries.unique()
     groups.sort()
@@ -365,22 +367,50 @@ def compute_metrics(
         for group in groups
     ]
 
+    # The disagreement between orignal model and manipulations
+    metrics["manipulation_hamming"] = np.mean(
+        y_pred[true_audit_queries_mask]
+        != y_pred_no_manipulation[true_audit_queries_mask]
+    )
+
     # The demographic parity as seen by the users
     metrics["demographic_parity_user"] = float(
-        demographic_parity_difference(
-            y_queries[~true_audit_queries_mask],
+        demographic_parity(
+            y_queries[~true_audit_queries_mask].to_numpy(),
             y_pred[~true_audit_queries_mask],
-            sensitive_features=A_queries[~true_audit_queries_mask],
+            A_queries[~true_audit_queries_mask].to_numpy(),
+            mode="difference",
         )
     )
     # The demographic parity as seen by the auditor
     metrics["demographic_parity_audit"] = float(
-        demographic_parity_difference(
-            y_queries[true_audit_queries_mask],
+        demographic_parity(
+            y_queries[true_audit_queries_mask].to_numpy(),
             y_pred[true_audit_queries_mask],
-            sensitive_features=A_queries[true_audit_queries_mask],
+            A_queries[true_audit_queries_mask].to_numpy(),
+            mode="difference",
         )
     )
+
+    # The demographic parity as seen by the users
+    metrics["absolute_demographic_parity_user"] = float(
+        demographic_parity(
+            y_queries[~true_audit_queries_mask].to_numpy(),
+            y_pred[~true_audit_queries_mask],
+            A_queries[~true_audit_queries_mask].to_numpy(),
+            mode="absolute_difference",
+        )
+    )
+    # The demographic parity as seen by the auditor
+    metrics["absolute_demographic_parity_audit"] = float(
+        demographic_parity(
+            y_queries[true_audit_queries_mask].to_numpy(),
+            y_pred[true_audit_queries_mask],
+            A_queries[true_audit_queries_mask].to_numpy(),
+            mode="absolute_difference",
+        )
+    )
+
     # The per group conditional accuracy as seen by the auditor
     metrics["conditional_accuracy_user"] = [
         accuracy_score(
@@ -532,6 +562,14 @@ def run_audit(
     )
     inference_time = perf_counter() - inference_time
 
+    # Ask the non manipulated values
+    y_pred_no_manipulation = model.predict(
+        X_queries,
+        A_queries,
+        np.zeros_like(true_audit_queries_mask),
+        random_state(seeds["model_inference"]),
+    )
+
     ############################################################################
     # EVALUATE AND SAVE THE RESULTS                                            #
     ############################################################################
@@ -549,7 +587,12 @@ def run_audit(
         fit_time=fit_time,
         inference_time=inference_time,
         **compute_metrics(
-            X_queries, y_queries, A_queries, y_pred, true_audit_queries_mask
+            X_queries,
+            y_queries,
+            A_queries,
+            y_pred,
+            y_pred_no_manipulation,
+            true_audit_queries_mask,
         ),
     )
 
@@ -734,7 +777,7 @@ def audit_detection():
 
 
 @app.command()
-def manipulation_stealthiness():
+def manipulation_stealthiness(run: bool = False):
     """Plot how much the un-fairness was lowered against how many points were
     changed"""
 
@@ -750,57 +793,27 @@ def manipulation_stealthiness():
     tpr = 1.0
     output = Path(f"generated/stealthiness{n_repetitions}_{dataset}_{base_model}.jsonl")
 
-    output.unlink(missing_ok=True)
+    if run:
+        output.unlink(missing_ok=True)
 
-    # Fix the randomness for everything except the audit_set selection
-    seed = np.random.SeedSequence(entropy)
-    override_seeds = {
-        "data_split": seed.spawn(1)[0],
-        "train_test": seed.spawn(1)[0],
-        "model": seed.spawn(1)[0],
-        "model_inference": seed.spawn(1)[0],
-        "audit_detector": seed.spawn(1)[0],
-        # "audit_set": seed.spawn(1)[0],
-    }
+        # Fix the randomness for everything except the audit_set selection
+        seed = np.random.SeedSequence(entropy)
+        override_seeds = {
+            "data_split": seed.spawn(1)[0],
+            "train_test": seed.spawn(1)[0],
+            "model": seed.spawn(1)[0],
+            "model_inference": seed.spawn(1)[0],
+            "audit_detector": seed.spawn(1)[0],
+            # "audit_set": seed.spawn(1)[0],
+        }
 
-    for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
-        print("honest unconstrained")
-        run_audit(
-            dataset=dataset,
-            base_model_name=base_model,
-            model_name="unconstrained",
-            strategy="honest",
-            detection_tpr=tpr,
-            detection_tnr=tnr,
-            audit_budget=audit_budget,
-            entropy=int(random_state(seed)),
-            override_seeds=override_seeds,
-            output=output,
-        )
-
-        print("model swap")
-        run_audit(
-            dataset=dataset,
-            base_model_name=base_model,
-            model_name="unconstrained",
-            strategy="model_swap",
-            detection_tpr=tpr,
-            detection_tnr=tnr,
-            audit_budget=audit_budget,
-            entropy=int(random_state(seed)),
-            override_seeds=override_seeds,
-            output=output,
-        )
-
-        print("linear relaxation", end=" ", flush=True)
-        for tolerated_unfairness in [0.0] + np.logspace(-3, -1, num=10).tolist():
-            print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+        for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
+            print("honest unconstrained")
             run_audit(
                 dataset=dataset,
                 base_model_name=base_model,
                 model_name="unconstrained",
-                strategy="linear_relaxation",
-                strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                strategy="honest",
                 detection_tpr=tpr,
                 detection_tnr=tnr,
                 audit_budget=audit_budget,
@@ -808,17 +821,13 @@ def manipulation_stealthiness():
                 override_seeds=override_seeds,
                 output=output,
             )
-        print()
 
-        print("score transport", end=" ", flush=True)
-        for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
-            print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+            print("model swap")
             run_audit(
                 dataset=dataset,
                 base_model_name=base_model,
                 model_name="unconstrained",
-                strategy="label_transport",
-                strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                strategy="model_swap",
                 detection_tpr=tpr,
                 detection_tnr=tnr,
                 audit_budget=audit_budget,
@@ -826,25 +835,60 @@ def manipulation_stealthiness():
                 override_seeds=override_seeds,
                 output=output,
             )
-        print()
 
-        print("manipulation ROC", end=" ", flush=True)
-        for theta in np.linspace(0.5, 0.6, num=10):
-            print(f"{theta:.2f}", end=" ", flush=True)
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="ROC_mitigation",
-                strategy_params={"theta": theta},  # type: ignore
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budget=audit_budget,
-                entropy=int(random_state(seed)),
-                override_seeds=override_seeds,
-                output=output,
-            )
-        print()
+            print("linear relaxation", end=" ", flush=True)
+            for tolerated_unfairness in [0.0] + np.logspace(-3, -1, num=10).tolist():
+                print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+                run_audit(
+                    dataset=dataset,
+                    base_model_name=base_model,
+                    model_name="unconstrained",
+                    strategy="linear_relaxation",
+                    strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                    detection_tpr=tpr,
+                    detection_tnr=tnr,
+                    audit_budget=audit_budget,
+                    entropy=int(random_state(seed)),
+                    override_seeds=override_seeds,
+                    output=output,
+                )
+            print()
+
+            print("score transport", end=" ", flush=True)
+            for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
+                print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+                run_audit(
+                    dataset=dataset,
+                    base_model_name=base_model,
+                    model_name="unconstrained",
+                    strategy="label_transport",
+                    strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                    detection_tpr=tpr,
+                    detection_tnr=tnr,
+                    audit_budget=audit_budget,
+                    entropy=int(random_state(seed)),
+                    override_seeds=override_seeds,
+                    output=output,
+                )
+            print()
+
+            print("manipulation ROC", end=" ", flush=True)
+            for theta in np.linspace(0.5, 0.6, num=10):
+                print(f"{theta:.2f}", end=" ", flush=True)
+                run_audit(
+                    dataset=dataset,
+                    base_model_name=base_model,
+                    model_name="unconstrained",
+                    strategy="ROC_mitigation",
+                    strategy_params={"theta": theta},  # type: ignore
+                    detection_tpr=tpr,
+                    detection_tnr=tnr,
+                    audit_budget=audit_budget,
+                    entropy=int(random_state(seed)),
+                    override_seeds=override_seeds,
+                    output=output,
+                )
+            print()
 
     params = [
         "dataset",
@@ -869,17 +913,11 @@ def manipulation_stealthiness():
         .with_columns(
             pl.col("demographic_parity_audit_std") / sqrt(n_repetitions),
             pl.col("auditset_hamming_std") / sqrt(n_repetitions),
+            pl.col("manipulation_hamming_std") / sqrt(n_repetitions),
             pl.col("strategy_params").struct.json_encode(),
         )
         .sort("strategy")
     )
-
-    records.select(
-        "strategy",
-        "strategy_params",
-        "demographic_parity_audit",
-        "auditset_hamming",
-    ).write_csv("generated/test.csv")
 
     fig = px.scatter(
         records,
@@ -891,6 +929,20 @@ def manipulation_stealthiness():
         error_y="demographic_parity_audit_std",
         hover_data=["strategy_params"],
     )
+    fig.update_traces(marker_size=20)
+    fig.show()
+
+    fig = px.scatter(
+        records,
+        x="manipulation_hamming",
+        y="demographic_parity_audit",
+        color="strategy",
+        category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
+        error_x="manipulation_hamming_std",
+        error_y="demographic_parity_audit_std",
+        hover_data=["strategy_params"],
+    )
+    fig.update_traces(marker_size=20)
     fig.show()
 
 

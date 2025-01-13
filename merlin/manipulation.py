@@ -5,6 +5,7 @@ import ot
 import numpy as np
 import cvxpy as cp
 from fairlearn.postprocessing import ThresholdOptimizer
+from scipy import sparse
 from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin
 
 from merlin.utils import subsample_mask
@@ -390,9 +391,7 @@ class LabelTransport(ManipulatedClassifier):
 
             # Compute the barycenter of the marginals (weighted by the
             # proportion of their respective sensitive attribute value)
-            bary_wass = ot.bregman.barycenter(
-                marginals, cost, reg=1e-2, weights=weights
-            )
+            bary_wass = ot.lp.barycenter(marginals, cost, weights=weights)
 
             # Compute the transport plan. The plan is a 2x2 matrix which
             # describes how many (rather which proportion) labels to flip (or
@@ -423,9 +422,10 @@ class LabelTransport(ManipulatedClassifier):
 
             y_new = y.copy()
             rs = self.random_state
-            weight = np.abs(
-                y_proba[audit_queries_mask][:, 0] - y_proba[audit_queries_mask][:, 1]
-            )
+            # weight = np.abs(
+            #     y_proba[audit_queries_mask][:, 0] - y_proba[audit_queries_mask][:, 1]
+            # )
+            weight = None
 
             # Flip the points based on the transport plan
             for attr_value, n_flips in zip([0, 1], [n_flips_neg, n_flips_pos]):
