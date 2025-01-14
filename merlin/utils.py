@@ -10,6 +10,7 @@ def random_state(seed: np.random.SeedSequence) -> np.int32:
 
     Required to adapt the new numpy rng system to the int-based system of
     sklearn.
+    NOTE: Two calls with the same seed will return the same value.
     """
     return seed.generate_state(1)[0]
 

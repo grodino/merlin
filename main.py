@@ -2,7 +2,7 @@ import json
 from itertools import product
 from math import sqrt
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Iterable
 from functools import cache
 from time import perf_counter
 
@@ -349,39 +349,24 @@ def compute_metrics(
     groups = A_queries.unique()
     groups.sort()
 
-    # The utility as seen by the users
-    metrics["utility_user"] = accuracy_score(
-        y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
-    )
+    ############################################################################
+    # SYSTEM (UNDER MANIPULATION) AS SEEN BY THE AUDITOR                       #
+    ############################################################################
     # The utility as measured by the auditor
     metrics["utility_audit"] = accuracy_score(
         y_queries[true_audit_queries_mask], y_pred[true_audit_queries_mask]
     )
+
     # The per group conditional accuracy as seen by the users
-    metrics["conditional_accuracy_user"] = [
+    metrics["conditional_accuracy_audit"] = [
         accuracy_score(
-            y_queries[~true_audit_queries_mask],
-            y_pred[~true_audit_queries_mask],
-            sample_weight=A_queries[~true_audit_queries_mask] == group,
+            y_queries[true_audit_queries_mask],
+            y_pred[true_audit_queries_mask],
+            sample_weight=A_queries[true_audit_queries_mask] == group,
         )
         for group in groups
     ]
 
-    # The disagreement between orignal model and manipulations
-    metrics["manipulation_hamming"] = np.mean(
-        y_pred[true_audit_queries_mask]
-        != y_pred_no_manipulation[true_audit_queries_mask]
-    )
-
-    # The demographic parity as seen by the users
-    metrics["demographic_parity_user"] = float(
-        demographic_parity(
-            y_queries[~true_audit_queries_mask].to_numpy(),
-            y_pred[~true_audit_queries_mask],
-            A_queries[~true_audit_queries_mask].to_numpy(),
-            mode="difference",
-        )
-    )
     # The demographic parity as seen by the auditor
     metrics["demographic_parity_audit"] = float(
         demographic_parity(
@@ -392,15 +377,6 @@ def compute_metrics(
         )
     )
 
-    # The demographic parity as seen by the users
-    metrics["absolute_demographic_parity_user"] = float(
-        demographic_parity(
-            y_queries[~true_audit_queries_mask].to_numpy(),
-            y_pred[~true_audit_queries_mask],
-            A_queries[~true_audit_queries_mask].to_numpy(),
-            mode="absolute_difference",
-        )
-    )
     # The demographic parity as seen by the auditor
     metrics["absolute_demographic_parity_audit"] = float(
         demographic_parity(
@@ -411,15 +387,66 @@ def compute_metrics(
         )
     )
 
-    # The per group conditional accuracy as seen by the auditor
+    ############################################################################
+    # SYSTEM (NO MANIPULATION) AS SEEN BY THE AUDITOR                       #
+    ############################################################################
+    # The demographic parity with no manipulation
+    metrics["demographic_parity_audit_honest"] = demographic_parity(
+        y_queries[true_audit_queries_mask].to_numpy(),
+        y_pred_no_manipulation[true_audit_queries_mask],
+        A_queries[true_audit_queries_mask].to_numpy(),
+        mode="difference",
+    )
+    # The absoulute demographic parity with no manipulation
+    metrics["absolute_demographic_parity_audit_honest"] = demographic_parity(
+        y_queries[true_audit_queries_mask].to_numpy(),
+        y_pred_no_manipulation[true_audit_queries_mask],
+        A_queries[true_audit_queries_mask].to_numpy(),
+        mode="absolute_difference",
+    )
+
+    # The disagreement between orignal model and manipulations
+    metrics["manipulation_hamming"] = np.mean(
+        y_pred[true_audit_queries_mask]
+        != y_pred_no_manipulation[true_audit_queries_mask]
+    )
+
+    ############################################################################
+    # SYSTEM AS SEEN BY THE USERS                                              #
+    ############################################################################
+    # The utility (for now, the accuracy) as seen by the users
+    metrics["utility_user"] = accuracy_score(
+        y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
+    )
+
+    # The per group conditional accuracy as seen by the users
     metrics["conditional_accuracy_user"] = [
         accuracy_score(
-            y_queries[true_audit_queries_mask],
-            y_pred[true_audit_queries_mask],
-            sample_weight=A_queries[true_audit_queries_mask] == group,
+            y_queries[~true_audit_queries_mask],
+            y_pred[~true_audit_queries_mask],
+            sample_weight=A_queries[~true_audit_queries_mask] == group,
         )
         for group in groups
     ]
+
+    # The demographic parity as seen by the users
+    metrics["demographic_parity_user"] = float(
+        demographic_parity(
+            y_queries[~true_audit_queries_mask].to_numpy(),
+            y_pred[~true_audit_queries_mask],
+            A_queries[~true_audit_queries_mask].to_numpy(),
+            mode="difference",
+        )
+    )
+    # The absolute demographic parity as seen by the users
+    metrics["absolute_demographic_parity_user"] = float(
+        demographic_parity(
+            y_queries[~true_audit_queries_mask].to_numpy(),
+            y_pred[~true_audit_queries_mask],
+            A_queries[~true_audit_queries_mask].to_numpy(),
+            mode="absolute_difference",
+        )
+    )
 
     return metrics
 
@@ -431,7 +458,7 @@ def run_audit(
     model_params: str = "",
     strategy: ManipulationStrategy = "honest",
     strategy_params: str = "",
-    audit_budget: int = 1_000,
+    audit_budgets: int | Iterable[int] = 1_000,
     detection_tpr: float = 1.0,
     detection_tnr: float = 1.0,
     entropy: int = 123456789,
@@ -458,6 +485,8 @@ def run_audit(
     }
     if override_seeds:
         seeds.update(override_seeds)
+    if isinstance(audit_budgets, int):
+        audit_budgets = [audit_budgets]
 
     ############################################################################
     # GENERATE THE DATA SPLITS                                                 #
@@ -529,77 +558,83 @@ def run_audit(
     ############################################################################
     oracle = detection_oracle(detection_tpr, detection_tnr)
 
-    ############################################################################
-    # RUN THE AUDIT SIMULATION                                                 #
-    ############################################################################
-    # Generate the audit set from the provided seed audit set
-    X_audit, y_audit, A_audit = audit_set(
-        features.loc[audit_idx],
-        label.loc[audit_idx],
-        group.loc[audit_idx],
-        audit_budget,
-        seed=seeds["audit_set"],
-    )
-    assert (
-        A_audit.nunique() == group.nunique()
-    ), "There are groups that are not represented in the audit seed data"
+    for audit_budget in audit_budgets:
+        ############################################################################
+        # RUN THE AUDIT SIMULATION                                                 #
+        ############################################################################
+        # Generate the audit set from the provided seed audit set
+        X_audit, y_audit, A_audit = audit_set(
+            features.loc[audit_idx],
+            label.loc[audit_idx],
+            group.loc[audit_idx],
+            audit_budget,
+            seed=seeds["audit_set"],
+        )
+        assert (
+            A_audit.nunique() == group.nunique()
+        ), "There are groups that are not represented in the audit seed data"
 
-    # Generate the requests stream as seen by the platform (a.k.a. audit set + users set)
-    X_queries = pd.concat([features.loc[test_idx], X_audit])
-    y_queries = pd.concat([label.loc[test_idx], y_audit])
-    A_queries = pd.concat([group.loc[test_idx], A_audit])
+        # Generate the requests stream as seen by the platform (a.k.a. audit set + users set)
+        X_queries = pd.concat([features.loc[test_idx], X_audit])
+        y_queries = pd.concat([label.loc[test_idx], y_audit])
+        A_queries = pd.concat([group.loc[test_idx], A_audit])
 
-    # Simulate the audit queries detection mechanism
-    true_audit_queries_mask = np.concat(
-        [np.zeros(len(test_idx)), np.ones(audit_budget)]
-    ).astype(bool)
-    audit_queries_mask = oracle.detect(true_audit_queries_mask, seeds["audit_detector"])
+        # Simulate the audit queries detection mechanism
+        true_audit_queries_mask = np.concat(
+            [np.zeros(len(test_idx)), np.ones(audit_budget)]
+        ).astype(bool)
+        audit_queries_mask = oracle.detect(
+            true_audit_queries_mask, seeds["audit_detector"]
+        )
 
-    # Ask the (potentially manipulated) model to label the queries
-    inference_time = perf_counter()
-    y_pred = model.predict(
-        X_queries, A_queries, audit_queries_mask, random_state(seeds["model_inference"])
-    )
-    inference_time = perf_counter() - inference_time
-
-    # Ask the non manipulated values
-    y_pred_no_manipulation = model.predict(
-        X_queries,
-        A_queries,
-        np.zeros_like(true_audit_queries_mask),
-        random_state(seeds["model_inference"]),
-    )
-
-    ############################################################################
-    # EVALUATE AND SAVE THE RESULTS                                            #
-    ############################################################################
-    record = dict(
-        # Experiment parameters
-        dataset=dataset,
-        model_name=model_name,
-        model_params=model_params_dict,
-        strategy=strategy,
-        strategy_params=strategy_params_dict,
-        audit_budget=audit_budget,
-        detection_tpr=detection_tpr,
-        detection_tnr=detection_tnr,
-        entropy=entropy,
-        fit_time=fit_time,
-        inference_time=inference_time,
-        **compute_metrics(
+        # Ask the (potentially manipulated) model to label the queries
+        inference_time = perf_counter()
+        y_pred = model.predict(
             X_queries,
-            y_queries,
             A_queries,
-            y_pred,
-            y_pred_no_manipulation,
-            true_audit_queries_mask,
-        ),
-    )
+            audit_queries_mask,
+            random_state(seeds["model_inference"]),
+        )
+        inference_time = perf_counter() - inference_time
 
-    if output:
-        with output.open("a") as file:
-            json.dump(record, file)
-            file.write("\n")
+        # Ask the non manipulated values
+        y_pred_no_manipulation = model.predict(
+            X_queries,
+            A_queries,
+            np.zeros_like(audit_queries_mask, dtype=bool),
+            random_state(seeds["model_inference"]),
+        )
+
+        ############################################################################
+        # EVALUATE AND SAVE THE RESULTS                                            #
+        ############################################################################
+        record = dict(
+            # Experiment parameters
+            dataset=dataset,
+            model_name=model_name,
+            model_params=model_params_dict,
+            strategy=strategy,
+            strategy_params=strategy_params_dict,
+            audit_budget=audit_budget,
+            detection_tpr=detection_tpr,
+            detection_tnr=detection_tnr,
+            entropy=entropy,
+            fit_time=fit_time,
+            inference_time=inference_time,
+            **compute_metrics(
+                X_queries,
+                y_queries,
+                A_queries,
+                y_pred,
+                y_pred_no_manipulation,
+                true_audit_queries_mask,
+            ),
+        )
+
+        if output:
+            with output.open("a") as file:
+                json.dump(record, file)
+                file.write("\n")
 
 
 @app.command()
@@ -666,6 +701,67 @@ def base_rates():
         )
 
     pl.from_records(records).write_csv("test.csv")
+
+
+@app.command()
+def estimation_variance(run: bool = False):
+    """Without manipulations, study the budget required to reduce variance and bias"""
+
+    dataset = "ACSEmployment_binarized"
+    # base_model = "skrub_logistic"
+    base_model = "skrub"
+    audit_budgets = [
+        100,
+        500,
+        600,
+        700,
+        800,
+        900,
+        1_000,
+        2_000,
+        3_000,
+        4_000,
+        5_000,
+        9_000,
+    ]
+    # n_repetitions = 15
+    n_repetitions = 5
+    # n_repetitions = 1
+    entropy = 12345678
+    tnr = 1.0
+    tpr = 1.0
+    output = Path(
+        f"generated/estimation_variance{n_repetitions}_{dataset}_{base_model}.jsonl"
+    )
+
+    if run:
+        output.unlink(missing_ok=True)
+
+        # Fix the randomness for everything except the audit_set selection
+        seed = np.random.SeedSequence(entropy)
+        override_seeds = {
+            "data_split": seed.spawn(1)[0],
+            "train_test": seed.spawn(1)[0],
+            "model": seed.spawn(1)[0],
+            "model_inference": seed.spawn(1)[0],
+            "audit_detector": seed.spawn(1)[0],
+            # "audit_set": seed.spawn(1)[0],
+        }
+
+        for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
+            print("honest unconstrained")
+            run_audit(
+                dataset=dataset,
+                base_model_name=base_model,
+                model_name="unconstrained",
+                strategy="honest",
+                detection_tpr=tpr,
+                detection_tnr=tnr,
+                audit_budgets=audit_budgets,
+                entropy=int(random_state(seed)),
+                override_seeds=override_seeds,
+                output=output,
+            )
 
 
 @app.command()
@@ -816,7 +912,7 @@ def manipulation_stealthiness(run: bool = False):
                 strategy="honest",
                 detection_tpr=tpr,
                 detection_tnr=tnr,
-                audit_budget=audit_budget,
+                audit_budgets=audit_budget,
                 entropy=int(random_state(seed)),
                 override_seeds=override_seeds,
                 output=output,
@@ -830,7 +926,7 @@ def manipulation_stealthiness(run: bool = False):
                 strategy="model_swap",
                 detection_tpr=tpr,
                 detection_tnr=tnr,
-                audit_budget=audit_budget,
+                audit_budgets=audit_budget,
                 entropy=int(random_state(seed)),
                 override_seeds=override_seeds,
                 output=output,
@@ -847,7 +943,7 @@ def manipulation_stealthiness(run: bool = False):
                     strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
                     detection_tpr=tpr,
                     detection_tnr=tnr,
-                    audit_budget=audit_budget,
+                    audit_budgets=audit_budget,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -865,7 +961,7 @@ def manipulation_stealthiness(run: bool = False):
                     strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
                     detection_tpr=tpr,
                     detection_tnr=tnr,
-                    audit_budget=audit_budget,
+                    audit_budgets=audit_budget,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -883,7 +979,7 @@ def manipulation_stealthiness(run: bool = False):
                     strategy_params={"theta": theta},  # type: ignore
                     detection_tpr=tpr,
                     detection_tnr=tnr,
-                    audit_budget=audit_budget,
+                    audit_budgets=audit_budget,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -903,21 +999,39 @@ def manipulation_stealthiness(run: bool = False):
     ]
     records = (
         pl.read_ndjson(output)
+        # For now, all model params are None so we can drop them
         .select(pl.all().exclude("model_params"))
-        .with_columns(auditset_hamming=1 - pl.col("utility_audit"))
+        # The auditset hamming is what the auditor measures to detect manipulations
+        .with_columns(
+            auditset_hamming=1 - pl.col("utility_audit"),
+            hidden_demographic_parity=(
+                pl.col("demographic_parity_audit")
+                - pl.col("demographic_parity_audit_honest")
+            ).abs(),
+            hidden_absolute_demographic_parity=(
+                pl.col("absolute_demographic_parity_audit")
+                - pl.col("absolute_demographic_parity_audit_honest")
+            ).abs(),
+        )
+        # Group by all the parameters (model, manipulation and detection params)
         .group_by(params)
+        # Compute the average and standart deviation over the differents seeds
         .agg(
             pl.all().mean(),
             pl.all().std().name.suffix("_std"),
         )
+        # Compute the "error bars" and convert the struct columns into
+        # jsonstring columns for plotly to be happy
         .with_columns(
             pl.col("demographic_parity_audit_std") / sqrt(n_repetitions),
             pl.col("auditset_hamming_std") / sqrt(n_repetitions),
             pl.col("manipulation_hamming_std") / sqrt(n_repetitions),
             pl.col("strategy_params").struct.json_encode(),
-        )
-        .sort("strategy")
+        ).sort("strategy")
     )
+
+    # TODO: detection idea. Are the labels differences mostly done in the way
+    # that optimizes the observed demographic parity?
 
     fig = px.scatter(
         records,
