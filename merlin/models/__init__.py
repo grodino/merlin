@@ -1,1 +1,0 @@
-from merlin.models.resnet import make_resnet18

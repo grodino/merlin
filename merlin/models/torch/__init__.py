@@ -1,0 +1,1 @@
+from merlin.models.torch.resnet import make_resnet18
