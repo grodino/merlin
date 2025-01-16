@@ -49,13 +49,26 @@ from merlin.manipulation import (
 from merlin.utils import extract_params, random_state
 
 import skorch as scotch
+from torchvision import transforms
 
-
-from merlin.models.torch import LeNet, MODEL_ARCHITECTURE_FACTORY
+from merlin.models.torch import LeNet, MODEL_ARCHITECTURE_FACTORY, MODEL_INPUT_TRANSFORMATION_FACTORY
 from merlin.models.skorch import PretrainedFixedNetClassifier
 
 from merlin.helpers import ParameterParser
-from merlin.helpers.transform import transform_images_to_tensors
+from merlin.helpers.transform import make_transformation
+
+from merlin.datasets import load_celeba
+
+
+def get_subset(data, subset):
+    if isinstance(data, pd.DataFrame) or isinstance(data, pd.Series):
+        # Use .loc[] for Pandas
+        return data.loc[subset]
+    elif isinstance(data, np.ndarray):
+        # Use NumPy-style indexing for arrays
+        return data[subset]
+    else:
+        raise TypeError("Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy array.")
 
 
 def plot():
@@ -153,7 +166,7 @@ Dataset = Annotated[
 
 
 @cache
-def get_data(dataset: Dataset, binarize_group: bool = False):
+def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
     if dataset == "ACSEmployment":
         data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
         # group_col = "AGEP"
@@ -223,14 +236,17 @@ def get_data(dataset: Dataset, binarize_group: bool = False):
                 group[~samples_to_remove],
             )
     elif dataset == "celeba":
-        # Load the CelebA dataset from Hugging Face
-        celeb_data = load_dataset("flwrlabs/celeba", split="valid[:200]")
-        df = celeb_data.to_pandas()  # Convert to pandas DataFrame for consistency
-
-        # Select features, target, and group
-        features = df["image"]
-        label = df["Smiling"].astype(int)  # Use 'Smiling' as the target
-        group = df["Male"].astype(int)    # Use 'Male' as the sensitive attribute
+        transformation = transforms.Compose([
+            transforms.ToTensor()
+        ])
+        if "torch_model_architecture" in extra_args:
+            meanstd = extra_args.get("meanstd", None)
+            transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[extra_args["torch_model_architecture"]]
+            transformation = transformation_factory(meanstd)
+        features, attr_df = load_celeba(transformation, 1000)
+        
+        label = attr_df["Smiling"].astype(int)
+        group = attr_df["Male"].astype(int)
     else:
         raise NotImplementedError(f"The dataset {dataset} is not supported")
 
@@ -530,7 +546,7 @@ def run_audit(
     4. Samples audit points and simulate the auditor querying the platform.
     5. Compute the true/estimated fairness/performance metrics and audit manipulation detection
     """
-    AUDIT_SEED_SET_SIZE = 100
+    AUDIT_SEED_SET_SIZE = 500
     randomness = iter(np.random.SeedSequence(entropy).spawn(6))
     seeds = {
         "data_split": next(randomness),
@@ -554,8 +570,18 @@ def run_audit(
         binarize = True
     else:
         binarize = False
+        
+    model_params_dict = extract_params(model_params)
+    strategy_params_dict = extract_params(strategy_params)
+        
+    extra_args = {}
+    if dataset == "celeba" and base_model_name == "torch":
+        assert "model_architecture" in model_params_dict, "The model architecture must be specified"
+        extra_args = {
+            "torch_model_architecture": model_params_dict["model_architecture"],
+        }
 
-    features, label, group = get_data(dataset, binarize)
+    features, label, group = get_data(dataset, binarize, **extra_args)
 
     # The auditor has access to the same distribution as the model owner but
     # they do not have the exact same points
@@ -576,7 +602,8 @@ def run_audit(
         + label.loc[train_test_idx].astype(str),
     )
 
-    X_train = features.loc[train_idx]
+    
+    X_train = get_subset(features, train_idx)
     y_train = label.loc[train_idx]
     A_train = group.loc[train_idx]
 
@@ -595,8 +622,6 @@ def run_audit(
     ############################################################################
     # Extract the model params from the params string. For now, we assume that
     # there are only float params. Should be changed.
-    model_params_dict = extract_params(model_params)
-    strategy_params_dict = extract_params(strategy_params)
 
     model_params_dict = {
         "model_architecture": "lenet",
@@ -613,11 +638,11 @@ def run_audit(
     )
     fit_time = perf_counter()
 
-    print(X_train)
-    print(y_train)
+    # print(X_train)
+    # print(y_train)
 
-    if dataset == "celeba":
-        X_train = transform_images_to_tensors(X_train)
+    # if dataset == "celeba":
+    #     X_train = transform_images_to_tensors(X_train)
 
     model.fit(X_train, y_train, A_train)
     fit_time = perf_counter() - fit_time
@@ -633,7 +658,7 @@ def run_audit(
         ############################################################################
         # Generate the audit set from the provided seed audit set
         X_audit, y_audit, A_audit = audit_set(
-            features.loc[audit_idx],
+            get_subset(features, audit_idx),
             label.loc[audit_idx],
             group.loc[audit_idx],
             audit_budget,
@@ -644,12 +669,12 @@ def run_audit(
         ), "There are groups that are not represented in the audit seed data"
 
         # Generate the requests stream as seen by the platform (a.k.a. audit set + users set)
-        X_queries = pd.concat([features.loc[test_idx], X_audit])
+        if isinstance(features, pd.DataFrame) or isinstance(features, pd.Series):
+            X_queries = pd.concat([features.loc[test_idx], X_audit])
+        else:
+            X_queries = np.concatenate([features[test_idx], X_audit])
         y_queries = pd.concat([label.loc[test_idx], y_audit])
         A_queries = pd.concat([group.loc[test_idx], A_audit])
-
-        if dataset == "celeba":
-            X_queries = transform_images_to_tensors(X_queries)
 
         # Simulate the audit queries detection mechanism
         true_audit_queries_mask = np.concatenate(
@@ -1156,7 +1181,7 @@ def lenet():
         model_params="model_architecture=lenet,num_classes=2",
         strategy="honest",
         strategy_params="",
-        audit_budget=1_000,
+        audit_budgets=100,
         detection_tpr=1.0,
         detection_tnr=1.0,
         entropy=123456789,

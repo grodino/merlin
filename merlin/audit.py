@@ -6,7 +6,7 @@ from merlin.utils import random_state
 
 
 def audit_set(
-    features: pd.DataFrame,
+    features: pd.DataFrame | np.ndarray,
     label: pd.Series,
     group: pd.Series,
     budget: int,
