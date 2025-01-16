@@ -1,20 +1,27 @@
-import io
-
-import torch
-
+from typing import Optional, Tuple
 from torchvision import transforms
-from PIL import Image
 
 
-def transform_images_to_tensors(X_train):
+def make_transformation(input_shape, dataset_meanstd: Optional[Tuple[Tuple[float], Tuple[float]]]=None):
+    """
+    Creates a transformation pipeline for image data.
+
+    Parameters:
+    input_shape (tuple): The shape of the input images.
+    dataset_meanstd (Optional[Tuple[Tuple[float], Tuple[float]]]): A tuple containing the mean and standard deviation 
+                                                                for normalization. If None, default values are used.
+
+    Returns:
+    torchvision.transforms.Compose: A composed transformation pipeline.
+    """
+    if dataset_meanstd is None:
+        normalization = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                            std=[0.229, 0.224, 0.225])
+    else:
+        normalization = transforms.Normalize(mean=dataset_meanstd[0], std=dataset_meanstd[1])
     transform = transforms.Compose([
-            transforms.Resize((32, 32)),
-            transforms.ToTensor(),
+        transforms.Resize(input_shape),
+        transforms.ToTensor(),
+        normalization,
     ])
-
-    def process_image(image_dict):
-        # Convert bytes to an image and apply the transform
-        image = Image.open(io.BytesIO(image_dict["bytes"]))
-        return transform(image)
-    
-    return torch.stack([process_image(image) for image in X_train])
+    return transform

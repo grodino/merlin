@@ -49,8 +49,8 @@ def load_celeba(transform, subset: None | int | ArrayLike=None):
     # Prepares location for images to be stored
     num_images = len(attr_df["image_path"])
     assert num_images > 0, "No images to load"
-    sample_img = read_and_transform_image(attr_df["image_path"][0])
-    result_array = np.empty((num_images, *sample_img.shape))
+    sample_img = np.array(read_and_transform_image(attr_df["image_path"][0]))
+    result_array = np.empty((num_images, *sample_img.shape), dtype=sample_img.dtype)
     # Loads image into result_array
     def load_one_img(i, path):
         result_array[i] = read_and_transform_image(path)

@@ -10,6 +10,7 @@ class PretrainedFixedNetClassifier(NeuralNetClassifier):
     def fit(self, *args, **kwargs):
         if not self.initialized_:
             self.initialize()
+        return self
             
     def initialize(self, *args, **kwargs):
         super().initialize()

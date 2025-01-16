@@ -72,4 +72,7 @@ class ParameterParser:
             transformer=self.AttrExtractionTransformer())
 
     def parse(self, param_str):
+        param_str = param_str.strip()
+        if param_str == "":
+            return {}
         return self._parser.parse(param_str)
