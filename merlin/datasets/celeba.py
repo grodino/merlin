@@ -7,11 +7,37 @@ from tqdm import tqdm
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor, wait
 
-def load_celeba(transform):
+from numpy.typing import ArrayLike
+
+def load_celeba(transform, subset: None | int | ArrayLike=None):
+    """
+    Loads the CelebA dataset, applies transformations to the images, and returns the images along with their attributes.
+
+    Parameters:
+    -----------
+    transform : callable
+        A function or transform to apply to each image.
+    subset : None, int, or ArrayLike, optional
+        If None, loads the entire dataset. If an integer, loads the first `n` images. If an array-like, loads the images at the specified indices.
+
+    Returns: (result_array, attr_df)
+    --------
+    result_array : numpy.ndarray
+        An array of transformed images.
+    attr_df : pandas.DataFrame
+        A DataFrame containing the attributes of the images.
+    """
     # Download CelebA
     celeba_path = kagglehub.dataset_download("jessicali9530/celeba-dataset")
     # Load attributes
     attr_df = pd.read_csv(os.path.join(celeba_path, "list_attr_celeba.csv"))
+    match subset:
+        case None:
+            pass
+        case int(n):
+            attr_df = attr_df[:n]
+        case _:
+            attr_df = attr_df.iloc[subset]
     attr_df.replace(-1, 0, inplace=True)
     image_path = os.path.join(celeba_path, "img_align_celeba", "img_align_celeba")
     attr_df["image_path"] = attr_df["image_id"].apply(lambda x: os.path.join(image_path, x))
@@ -31,7 +57,7 @@ def load_celeba(transform):
         del img
     # Load images in parallel
     with ThreadPoolExecutor(max_workers=20) as executor:
-        with tqdm(total=num_images, desc="Loading Images...") as pbar:
+        with tqdm(total=num_images, desc="Loading Images") as pbar:
             loading_jobs = enumerate(attr_df["image_path"])
             futures = []
             for job in loading_jobs:
