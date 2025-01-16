@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class LeNet(nn.Module):
     """
@@ -8,11 +10,6 @@ class LeNet(nn.Module):
     """
 
     def __init__(self, num_classes):
-        """
-        Constructor. Instantiates the CNN Model
-            with 10 output classes
-
-        """
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, 5, padding="same")
         self.pool = nn.MaxPool2d(2, 2)

@@ -1,4 +1,5 @@
 import json
+import io
 from itertools import product
 from math import sqrt
 from pathlib import Path
@@ -12,6 +13,11 @@ import pandas as pd
 import polars as pl
 import sklearn as sk
 import typer
+
+import torch
+
+from datasets import load_dataset
+
 from fairlearn.metrics._fairness_metrics import (
     demographic_parity_difference,
 )
@@ -41,6 +47,15 @@ from merlin.manipulation import (
     LabelTransport,
 )
 from merlin.utils import extract_params, random_state
+
+import skorch as scotch
+
+
+from merlin.models.torch import LeNet, MODEL_ARCHITECTURE_FACTORY
+from merlin.models.skorch import PretrainedFixedNetClassifier
+
+from merlin.helpers import ParameterParser
+from merlin.helpers.transform import transform_images_to_tensors
 
 
 def plot():
@@ -139,73 +154,85 @@ Dataset = Annotated[
 
 @cache
 def get_data(dataset: Dataset, binarize_group: bool = False):
-    data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
-    # group_col = "AGEP"
-    group_col = "RAC1P"
+    if dataset == "ACSEmployment":
+        data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
+        # group_col = "AGEP"
+        group_col = "RAC1P"
 
-    ACSEmployment = folktables.BasicProblem(
-        features=[
-            "AGEP",
-            "SCHL",
-            "MAR",
-            "RELP",  # Not present in 2019
-            "DIS",
-            "ESP",
-            "CIT",
-            "MIG",
-            "MIL",
-            "ANC",
-            "NATIVITY",
-            "DEAR",
-            "DEYE",
-            "DREM",
-            "SEX",
-            "RAC1P",
-        ],
-        target="ESR",
-        target_transform=lambda x: x == 1,
-        group=group_col,
-        preprocess=lambda x: x,
-        # postprocess=lambda x: np.nan_to_num(x, -1),
-    )
-
-    # if binarize_group:
-    #     acs_data = data_source.get_data(states=["MN"], download=True)
-    #     features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-    #     label: pd.Series = labeldf["ESR"].astype(int)
-    #     group: pd.Series = groupdf[group_col].astype(int)
-    #     group.loc[groupdf[group_col] < 45] = 0
-    #     group.loc[45 <= groupdf[group_col]] = 1
-    #     group = group.astype(bool)
-
-    # else:
-    #     raise NotImplementedError("Only support binary groups for now")
-
-    if binarize_group:
-        acs_data = data_source.get_data(states=["MN"], download=True)
-        features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-        label: pd.Series = labeldf["ESR"].astype(int)
-        group: pd.Series = groupdf[group_col] != 1
-
-    else:
-        acs_data = data_source.get_data(states=["MN"], download=True)
-        features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-        label: pd.Series = labeldf["ESR"].astype(int)
-        group: pd.Series = groupdf[group_col].astype(int)
-
-        # Remove groups that have too few representatives
-        n_per_group = group.value_counts()
-        groups_to_remove = n_per_group.loc[n_per_group < 200].index
-        samples_to_remove = group.isin(groups_to_remove)
-
-        features, label, group = (
-            features.loc[~samples_to_remove],
-            label.loc[~samples_to_remove],
-            group[~samples_to_remove],
+        ACSEmployment = folktables.BasicProblem(
+            features=[
+                "AGEP",
+                "SCHL",
+                "MAR",
+                "RELP",  # Not present in 2019
+                "DIS",
+                "ESP",
+                "CIT",
+                "MIG",
+                "MIL",
+                "ANC",
+                "NATIVITY",
+                "DEAR",
+                "DEYE",
+                "DREM",
+                "SEX",
+                "RAC1P",
+            ],
+            target="ESR",
+            target_transform=lambda x: x == 1,
+            group=group_col,
+            preprocess=lambda x: x,
+            # postprocess=lambda x: np.nan_to_num(x, -1),
         )
+
+        # if binarize_group:
+        #     acs_data = data_source.get_data(states=["MN"], download=True)
+        #     features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
+
+        #     label: pd.Series = labeldf["ESR"].astype(int)
+        #     group: pd.Series = groupdf[group_col].astype(int)
+        #     group.loc[groupdf[group_col] < 45] = 0
+        #     group.loc[45 <= groupdf[group_col]] = 1
+        #     group = group.astype(bool)
+
+        # else:
+        #     raise NotImplementedError("Only support binary groups for now")
+
+        if binarize_group:
+            acs_data = data_source.get_data(states=["MN"], download=True)
+            features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
+
+            label: pd.Series = labeldf["ESR"].astype(int)
+            group: pd.Series = groupdf[group_col] != 1
+
+        else:
+            acs_data = data_source.get_data(states=["MN"], download=True)
+            features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
+
+            label: pd.Series = labeldf["ESR"].astype(int)
+            group: pd.Series = groupdf[group_col].astype(int)
+
+            # Remove groups that have too few representatives
+            n_per_group = group.value_counts()
+            groups_to_remove = n_per_group.loc[n_per_group < 200].index
+            samples_to_remove = group.isin(groups_to_remove)
+
+            features, label, group = (
+                features.loc[~samples_to_remove],
+                label.loc[~samples_to_remove],
+                group[~samples_to_remove],
+            )
+    elif dataset == "celeba":
+        # Load the CelebA dataset from Hugging Face
+        celeb_data = load_dataset("flwrlabs/celeba", split="valid[:200]")
+        df = celeb_data.to_pandas()  # Convert to pandas DataFrame for consistency
+
+        # Select features, target, and group
+        features = df["image"]
+        label = df["Smiling"].astype(int)  # Use 'Smiling' as the target
+        group = df["Male"].astype(int)    # Use 'Male' as the sensitive attribute
+    else:
+        raise NotImplementedError(f"The dataset {dataset} is not supported")
 
     # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
     # RAC1P Character 1
@@ -225,6 +252,27 @@ def get_data(dataset: Dataset, binarize_group: bool = False):
     print(f"dataset size: {features.shape[0]}")
 
     return features, label, group
+
+
+def build_skorch_model(model_params: dict[str, Any]) -> PretrainedFixedNetClassifier:
+    for required_attr in ["model_architecture", "num_classes"]:
+        if required_attr not in model_params:
+            raise ValueError(
+                f"The '{required_attr}' parameter is required for torch models"
+            )
+    if "model_architecture" not in model_params:
+        raise ValueError("The 'model_architecture' parameter is required for torch models")
+    if model_params["model_architecture"] not in MODEL_ARCHITECTURE_FACTORY:
+        raise ValueError("The specified architecture is not supported")
+    architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_params["model_architecture"]]
+    num_classes = model_params["num_classes"]
+    frozen_params = model_params.get("frozen_params", True)
+    skorch_wrapper = PretrainedFixedNetClassifier if frozen_params else scotch.NeuralNetClassifier
+    skorch_model = skorch_wrapper(
+        module=architecture_factory,
+        module__num_classes=num_classes,
+    )
+    return skorch_model
 
 
 def generate_model(
@@ -252,6 +300,9 @@ def generate_model(
                 LogisticRegression(random_state=random_state(seed))
             )
             sample_weight_name = "logisticregression__sample_weight"
+
+        case "torch":
+            base_estimator = build_skorch_model(model_params)
 
         case _:
             raise NotImplementedError(
@@ -326,7 +377,13 @@ def generate_model(
             raise NotImplementedError(
                 f"The manipulation strategy {strategy} is not supported"
             )
-
+    if base_model_name == "torch":
+        skorch_wrapper = model.estimator
+        frozen_params = model_params.get("frozen_params", True)
+        if "weight_path" in model_params or frozen_params:
+            skorch_wrapper.initialize()
+        if "weight_path" in model_params: 
+            skorch_wrapper.load_state_dict(torch.load(model_params["weight_path"]))
     return model
 
 
@@ -473,7 +530,7 @@ def run_audit(
     4. Samples audit points and simulate the auditor querying the platform.
     5. Compute the true/estimated fairness/performance metrics and audit manipulation detection
     """
-    AUDIT_SEED_SET_SIZE = 10_000
+    AUDIT_SEED_SET_SIZE = 100
     randomness = iter(np.random.SeedSequence(entropy).spawn(6))
     seeds = {
         "data_split": next(randomness),
@@ -530,7 +587,7 @@ def run_audit(
         group.loc[test_idx].nunique() == group.nunique()
     ), "There are groups that are not represented in the train data"
     assert (
-        len(features) == np.unique(np.concat([train_idx, test_idx, audit_idx])).shape[0]
+        len(features) == np.unique(np.concatenate([train_idx, test_idx, audit_idx])).shape[0]
     )
 
     ############################################################################
@@ -541,6 +598,11 @@ def run_audit(
     model_params_dict = extract_params(model_params)
     strategy_params_dict = extract_params(strategy_params)
 
+    model_params_dict = {
+        "model_architecture": "lenet",
+        "num_classes": 2
+    }
+
     model = generate_model(
         base_model_name,
         model_name,
@@ -550,6 +612,13 @@ def run_audit(
         seeds["model"],
     )
     fit_time = perf_counter()
+
+    print(X_train)
+    print(y_train)
+
+    if dataset == "celeba":
+        X_train = transform_images_to_tensors(X_train)
+
     model.fit(X_train, y_train, A_train)
     fit_time = perf_counter() - fit_time
 
@@ -579,13 +648,14 @@ def run_audit(
         y_queries = pd.concat([label.loc[test_idx], y_audit])
         A_queries = pd.concat([group.loc[test_idx], A_audit])
 
+        if dataset == "celeba":
+            X_queries = transform_images_to_tensors(X_queries)
+
         # Simulate the audit queries detection mechanism
-        true_audit_queries_mask = np.concat(
+        true_audit_queries_mask = np.concatenate(
             [np.zeros(len(test_idx)), np.ones(audit_budget)]
         ).astype(bool)
-        audit_queries_mask = oracle.detect(
-            true_audit_queries_mask, seeds["audit_detector"]
-        )
+        audit_queries_mask = oracle.detect(true_audit_queries_mask, seeds["audit_detector"])    
 
         # Ask the (potentially manipulated) model to label the queries
         inference_time = perf_counter()
@@ -769,10 +839,7 @@ def audit_detection():
     """Evaluate the effect of the platform's auditor-detector performance on the
     auditor's estimate"""
 
-    dataset = "ACSEmployment_binarized"
-    # base_model = "skrub_logistic"
-    base_model = "skrub"
-    audit_budget = 1_000
+    audit_budget = 50
     # n_repetitions = 5
     n_repetitions = 1
     entropy = 123456789
@@ -1078,6 +1145,33 @@ def dev():
 
     print(model.classes_)
 
+
+@app.command()
+def lenet():
+    
+    run_audit(
+        dataset="celeba",
+        base_model_name="torch",
+        model_name="unconstrained",
+        model_params="model_architecture=lenet,num_classes=2",
+        strategy="honest",
+        strategy_params="",
+        audit_budget=1_000,
+        detection_tpr=1.0,
+        detection_tnr=1.0,
+        entropy=123456789,
+        output=None,
+        override_seeds=None,
+    )
+    
+    #     strategy: ManipulationStrategy = "honest",
+    #     strategy_params: str = "",
+    #     audit_budget: int = 1_000,
+    #     detection_tpr: float = 1.0,
+    #     detection_tnr: float = 1.0,
+    #     entropy: int = 123456789,
+    #     override_seeds: dict[str, np.random.SeedSequence] | None = None,
+    #     output: Path | None = None)
 
 # app.command()(run_audit)
 

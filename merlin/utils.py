@@ -4,6 +4,8 @@ import numpy as np
 from numpy.random import SeedSequence
 from numpy.typing import ArrayLike
 
+from merlin.helpers import ParameterParser
+
 
 def random_state(seed: np.random.SeedSequence) -> np.int32:
     """Generates a random u32 from the given seed
@@ -15,6 +17,12 @@ def random_state(seed: np.random.SeedSequence) -> np.int32:
     return seed.generate_state(1)[0]
 
 
+
+def add_parser(f):
+    f.parser = ParameterParser()
+    return f
+
+@add_parser
 def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
     """Extract the model params from the params string "param1=0.1, param2=1"
 
@@ -24,15 +32,7 @@ def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
     if isinstance(params_str, dict):
         return params_str
 
-    params = {}
-
-    for param in params_str.split(","):
-        if "=" not in param:
-            continue
-        key, value = param.split("=")
-        params[key.strip()] = float(value.strip())
-
-    return params
+    return extract_params.parser.parse(params_str)
 
 
 def subsample_mask(

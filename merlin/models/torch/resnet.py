@@ -2,17 +2,19 @@ from torch import nn
 from torchvision.models import resnet18
 import torchvision.models
 
-def make_resnet18(num_classes: int, **model_kwargs) -> torchvision.models.resnet.ResNet:
+
+class ResNet18(nn.Module):
     """
-    Creates a ResNet-18 model with a modified fully connected layer to match the number of classes.
+    A custom implementation of the ResNet-18 architecture for classification tasks.
 
     Args:
-        num_classes (int): The number of classes for the output layer.
-        **model_kwargs: Additional keyword arguments to pass to the ResNet-18 model constructor.
-
-    Returns:
-        torchvision.models.resnet.ResNet: A ResNet-18 model with the specified number of output classes.
+        num_classes (int): The number of output classes for the classification task.
+        **model_kwargs: Additional keyword arguments to pass to the resnet18 model.
     """
-    model = resnet18(**model_kwargs)
-    model.fc = nn.Linear(model.fc.in_features, num_classes)
-    return model
+    def __init__(self, num_classes: int, **model_kwargs):
+        super().__init__()
+        self.model = resnet18(**model_kwargs)
+        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
