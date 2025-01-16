@@ -623,11 +623,6 @@ def run_audit(
     # Extract the model params from the params string. For now, we assume that
     # there are only float params. Should be changed.
 
-    model_params_dict = {
-        "model_architecture": "lenet",
-        "num_classes": 2
-    }
-
     model = generate_model(
         base_model_name,
         model_name,
@@ -1178,14 +1173,14 @@ def lenet():
         dataset="celeba",
         base_model_name="torch",
         model_name="unconstrained",
-        model_params="model_architecture=lenet,num_classes=2",
+        model_params="model_architecture=resnet18,num_classes=2",
         strategy="honest",
         strategy_params="",
         audit_budgets=100,
         detection_tpr=1.0,
         detection_tnr=1.0,
         entropy=123456789,
-        output=None,
+        output=Path("./data/abc.jsonl"),
         override_seeds=None,
     )
     
