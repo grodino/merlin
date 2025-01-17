@@ -61,21 +61,19 @@ from merlin.models.skorch import PretrainedFixedNetClassifier
 from merlin.helpers import ParameterParser
 from merlin.helpers.transform import make_transformation
 
-from merlin.datasets import load_celeba
+from merlin.datasets import CelebADataset
 
+from merlin.helpers.dataset import load_whole_dataset
 
 def get_subset(data, subset):
     if isinstance(data, pd.DataFrame) or isinstance(data, pd.Series):
         # Use .loc[] for Pandas
         return data.loc[subset]
-    elif isinstance(data, np.ndarray):
+    elif isinstance(data, np.ndarray) or isinstance(data, torch.Tensor):
         # Use NumPy-style indexing for arrays
         return data[subset]
     else:
-        raise TypeError(
-            "Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy array."
-        )
-
+        raise TypeError("Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy/torch array.")
 
 app = typer.Typer()
 ModelName = Annotated[str, "The name of the estimator trained by the platform"]
@@ -168,10 +166,19 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
                 extra_args["torch_model_architecture"]
             ]
             transformation = transformation_factory(meanstd)
-        features, attr_df = load_celeba(transformation, 1000)
-
-        label = attr_df["Smiling"].astype(int)
-        group = attr_df["Male"].astype(int)
+        label_col = "Smiling"
+        group_col = "Male"
+        celeba = torch.utils.data.Subset(CelebADataset(
+            target_columns=[
+                label_col,
+                group_col
+            ],
+            transform=transformation
+        ), indices=range(1000))
+        
+        features, [label, group] = load_whole_dataset(celeba)
+        label = pd.Series(label)
+        group = pd.Series(group)
     else:
         raise NotImplementedError(f"The dataset {dataset} is not supported")
 
@@ -195,7 +202,7 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
     return features, label, group
 
 
-def build_skorch_model(model_params: dict[str, Any]) -> PretrainedFixedNetClassifier:
+def build_skorch_model(model_params: dict[str, Any]) -> scotch.NeuralNetClassifier:
     for required_attr in ["model_architecture", "num_classes"]:
         if required_attr not in model_params:
             raise ValueError(
@@ -599,8 +606,10 @@ def run_audit(
         # Generate the requests stream as seen by the platform (a.k.a. audit set + users set)
         if isinstance(features, pd.DataFrame) or isinstance(features, pd.Series):
             X_queries = pd.concat([features.loc[test_idx], X_audit])
-        else:
+        elif isinstance(features, np.ndarray):
             X_queries = np.concatenate([features[test_idx], X_audit])
+        elif isinstance(features, torch.Tensor):
+            X_queries = torch.cat([features[test_idx], X_audit])
         y_queries = pd.concat([label.loc[test_idx], y_audit])
         A_queries = pd.concat([group.loc[test_idx], A_audit])
 
@@ -1108,7 +1117,7 @@ def lenet():
         dataset="celeba",
         base_model_name="torch",
         model_name="unconstrained",
-        model_params="model_architecture=resnet18,num_classes=2",
+        model_params="model_architecture=lenet,num_classes=2",
         strategy="honest",
         strategy_params="",
         audit_budgets=100,

@@ -16,3 +16,4 @@ class PretrainedFixedNetClassifier(NeuralNetClassifier):
         super().initialize()
         for p in self.module_.parameters():
             p.requires_grad = False
+        return self

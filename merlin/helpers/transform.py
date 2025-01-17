@@ -20,8 +20,8 @@ def make_transformation(input_shape, dataset_meanstd: Optional[Tuple[Tuple[float
     else:
         normalization = transforms.Normalize(mean=dataset_meanstd[0], std=dataset_meanstd[1])
     transform = transforms.Compose([
-        transforms.Resize(input_shape),
         transforms.ToTensor(),
+        transforms.Resize(input_shape),
         normalization,
     ])
     return transform

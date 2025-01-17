@@ -1,1 +1,1 @@
-from .celeba import load_celeba
+from .celeba import CelebADataset
