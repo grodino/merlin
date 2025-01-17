@@ -51,7 +51,11 @@ from merlin.utils import extract_params, random_state
 import skorch as scotch
 from torchvision import transforms
 
-from merlin.models.torch import LeNet, MODEL_ARCHITECTURE_FACTORY, MODEL_INPUT_TRANSFORMATION_FACTORY
+from merlin.models.torch import (
+    LeNet,
+    MODEL_ARCHITECTURE_FACTORY,
+    MODEL_INPUT_TRANSFORMATION_FACTORY,
+)
 from merlin.models.skorch import PretrainedFixedNetClassifier
 
 from merlin.helpers import ParameterParser
@@ -68,90 +72,9 @@ def get_subset(data, subset):
         # Use NumPy-style indexing for arrays
         return data[subset]
     else:
-        raise TypeError("Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy array.")
-
-
-def plot():
-    records = (
-        pl.read_csv("generated/pareto.csv")
-        .filter(pl.col("theta").is_null() | (pl.col("theta") < 0.6))
-        .with_columns(
-            param=pl.when(pl.col("model") == "exponentiated_gradient")
-            .then("epsilon")
-            .when(pl.col("model") == "tabular_learner")
-            .then(pl.lit("tabular_learner"))
-            .when(pl.col("model") == "threshold_optimizer")
-            .then(pl.lit("threshold_optimizer"))
-            .when(pl.col("model") == "manipulated_ROC")
-            .then("theta")
-            .when(pl.col("model") == "manipulated_rr")
-            .then("epsilon")
+        raise TypeError(
+            "Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy array."
         )
-        .group_by("model", "param")
-        .agg(
-            pl.col("accuracy").mean(),
-            pl.col("accuracy").std().name.suffix("_std"),
-            pl.col("demographic_parity").mean(),
-            pl.col("demographic_parity").std().name.suffix("_std"),
-        )
-        .with_columns(
-            pl.col("demographic_parity_std") / np.sqrt(5),
-            pl.col("accuracy_std") / np.sqrt(5),
-        )
-        .sort("model", "param")
-    )
-
-    # def hull(elements: pl.Series):
-    #     fields = elements.struct.fields
-    #     elements_arr = elements.struct.unnest().to_numpy()
-    #     idx_hull = ConvexHull(elements_arr).vertices
-
-    #     return (
-    #         pl.Series(elements_arr[idx_hull, :])
-    #         .cast(pl.List(pl.Float64))
-    #         .list.to_struct(fields=fields)
-    #         .explode()
-    #     )
-
-    # hull_points = (
-    #     records.group_by("model", "param")
-    #     .mean()
-    #     .filter(pl.col("model").is_in(["ROC_mitigation", "exponentiated_gradient"]))
-    #     .group_by("model")
-    #     .agg(
-    #         hull_points=pl.struct(["demographic_parity", "accuracy"]).map_elements(
-    #             hull,
-    #             return_dtype=pl.List(
-    #                 pl.Struct(
-    #                     fields=[
-    #                         pl.Field("demographic_parity", pl.Float64),
-    #                         pl.Field("accuracy", pl.Float64),
-    #                     ]
-    #                 )
-    #             ),
-    #         )
-    #     )
-    #     .filter(pl.col("hull_points").list.len() > 1)
-    #     .explode("hull_points")
-    #     .unnest("hull_points")
-    # )
-
-    fig = px.scatter(
-        records,
-        x="demographic_parity",
-        y="accuracy",
-        error_x="demographic_parity_std",
-        error_y="accuracy_std",
-        color="model",
-        symbol="model",
-        template="plotly_white",
-        hover_data="param",
-        width=1000,
-        height=600,
-    )
-    fig.update_traces(marker_size=10)
-
-    fig.show()
 
 
 app = typer.Typer()
@@ -168,7 +91,9 @@ Dataset = Annotated[
 @cache
 def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
     if dataset == "ACSEmployment":
-        data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
+        data_source = ACSDataSource(
+            survey_year="2018", horizon="1-Year", survey="person"
+        )
         # group_col = "AGEP"
         group_col = "RAC1P"
 
@@ -236,15 +161,15 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
                 group[~samples_to_remove],
             )
     elif dataset == "celeba":
-        transformation = transforms.Compose([
-            transforms.ToTensor()
-        ])
+        transformation = transforms.Compose([transforms.ToTensor()])
         if "torch_model_architecture" in extra_args:
             meanstd = extra_args.get("meanstd", None)
-            transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[extra_args["torch_model_architecture"]]
+            transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[
+                extra_args["torch_model_architecture"]
+            ]
             transformation = transformation_factory(meanstd)
         features, attr_df = load_celeba(transformation, 1000)
-        
+
         label = attr_df["Smiling"].astype(int)
         group = attr_df["Male"].astype(int)
     else:
@@ -277,13 +202,19 @@ def build_skorch_model(model_params: dict[str, Any]) -> PretrainedFixedNetClassi
                 f"The '{required_attr}' parameter is required for torch models"
             )
     if "model_architecture" not in model_params:
-        raise ValueError("The 'model_architecture' parameter is required for torch models")
+        raise ValueError(
+            "The 'model_architecture' parameter is required for torch models"
+        )
     if model_params["model_architecture"] not in MODEL_ARCHITECTURE_FACTORY:
         raise ValueError("The specified architecture is not supported")
-    architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_params["model_architecture"]]
+    architecture_factory = MODEL_ARCHITECTURE_FACTORY[
+        model_params["model_architecture"]
+    ]
     num_classes = model_params["num_classes"]
     frozen_params = model_params.get("frozen_params", True)
-    skorch_wrapper = PretrainedFixedNetClassifier if frozen_params else scotch.NeuralNetClassifier
+    skorch_wrapper = (
+        PretrainedFixedNetClassifier if frozen_params else scotch.NeuralNetClassifier
+    )
     skorch_model = skorch_wrapper(
         module=architecture_factory,
         module__num_classes=num_classes,
@@ -398,7 +329,7 @@ def generate_model(
         frozen_params = model_params.get("frozen_params", True)
         if "weight_path" in model_params or frozen_params:
             skorch_wrapper.initialize()
-        if "weight_path" in model_params: 
+        if "weight_path" in model_params:
             skorch_wrapper.load_state_dict(torch.load(model_params["weight_path"]))
     return model
 
@@ -570,13 +501,15 @@ def run_audit(
         binarize = True
     else:
         binarize = False
-        
+
     model_params_dict = extract_params(model_params)
     strategy_params_dict = extract_params(strategy_params)
-        
+
     extra_args = {}
     if dataset == "celeba" and base_model_name == "torch":
-        assert "model_architecture" in model_params_dict, "The model architecture must be specified"
+        assert (
+            "model_architecture" in model_params_dict
+        ), "The model architecture must be specified"
         extra_args = {
             "torch_model_architecture": model_params_dict["model_architecture"],
         }
@@ -602,7 +535,6 @@ def run_audit(
         + label.loc[train_test_idx].astype(str),
     )
 
-    
     X_train = get_subset(features, train_idx)
     y_train = label.loc[train_idx]
     A_train = group.loc[train_idx]
@@ -614,7 +546,8 @@ def run_audit(
         group.loc[test_idx].nunique() == group.nunique()
     ), "There are groups that are not represented in the train data"
     assert (
-        len(features) == np.unique(np.concatenate([train_idx, test_idx, audit_idx])).shape[0]
+        len(features)
+        == np.unique(np.concatenate([train_idx, test_idx, audit_idx])).shape[0]
     )
 
     ############################################################################
@@ -675,7 +608,9 @@ def run_audit(
         true_audit_queries_mask = np.concatenate(
             [np.zeros(len(test_idx)), np.ones(audit_budget)]
         ).astype(bool)
-        audit_queries_mask = oracle.detect(true_audit_queries_mask, seeds["audit_detector"])    
+        audit_queries_mask = oracle.detect(
+            true_audit_queries_mask, seeds["audit_detector"]
+        )
 
         # Ask the (potentially manipulated) model to label the queries
         inference_time = perf_counter()
@@ -1168,7 +1103,7 @@ def dev():
 
 @app.command()
 def lenet():
-    
+
     run_audit(
         dataset="celeba",
         base_model_name="torch",
@@ -1183,7 +1118,7 @@ def lenet():
         output=Path("./data/abc.jsonl"),
         override_seeds=None,
     )
-    
+
     #     strategy: ManipulationStrategy = "honest",
     #     strategy_params: str = "",
     #     audit_budget: int = 1_000,
@@ -1192,6 +1127,7 @@ def lenet():
     #     entropy: int = 123456789,
     #     override_seeds: dict[str, np.random.SeedSequence] | None = None,
     #     output: Path | None = None)
+
 
 # app.command()(run_audit)
 
