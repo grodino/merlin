@@ -348,9 +348,6 @@ class LinearRelaxation(ManipulatedClassifier):
         )
         y_pred = y_proba.argmax(-1)
 
-        print(y_pred.shape)
-        print(y_proba.shape)
-
         # Output on audit points are manipulated
         if np.sum(audit_queries_mask) > 0:
             y = y_proba[audit_queries_mask][:, 1]

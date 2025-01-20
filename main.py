@@ -1,5 +1,4 @@
 import json
-import io
 from itertools import product
 from math import sqrt
 from pathlib import Path
@@ -16,11 +15,6 @@ import typer
 
 import torch
 
-from datasets import load_dataset
-
-from fairlearn.metrics._fairness_metrics import (
-    demographic_parity_difference,
-)
 from fairlearn.postprocessing import ThresholdOptimizer
 from fairlearn.reductions import (
     DemographicParity,
@@ -52,7 +46,6 @@ import skorch as scotch
 from torchvision import transforms
 
 from merlin.models.torch import (
-    LeNet,
     MODEL_ARCHITECTURE_FACTORY,
     MODEL_INPUT_TRANSFORMATION_FACTORY,
 )
@@ -485,7 +478,8 @@ def run_audit(
     model_params: str = "",
     strategy: ManipulationStrategy = "honest",
     strategy_params: str = "",
-    audit_budgets: int | Iterable[int] = 1_000,
+    audit_budgets: int | list[int] = 1_000,
+    audit_pool_size: int = 100,
     detection_tpr: float = 1.0,
     detection_tnr: float = 1.0,
     entropy: int = 123456789,
@@ -500,7 +494,6 @@ def run_audit(
     4. Samples audit points and simulate the auditor querying the platform.
     5. Compute the true/estimated fairness/performance metrics and audit manipulation detection
     """
-    AUDIT_SEED_SET_SIZE = 500
     randomness = iter(np.random.SeedSequence(entropy).spawn(6))
     seeds = {
         "data_split": next(randomness),
@@ -543,7 +536,7 @@ def run_audit(
     # they do not have the exact same points
     train_test_idx, audit_idx = train_test_split(
         np.arange(len(features)),
-        test_size=AUDIT_SEED_SET_SIZE,
+        test_size=audit_pool_size,
         random_state=random_state(seeds["data_split"]),
         stratify=group.astype(str) + "_" + label.astype(str),
     )
@@ -589,12 +582,6 @@ def run_audit(
     )
     fit_time = perf_counter()
 
-    # print(X_train)
-    # print(y_train)
-
-    # if dataset == "celeba":
-    #     X_train = transform_images_to_tensors(X_train)
-
     model.fit(X_train, y_train, A_train)
     fit_time = perf_counter() - fit_time
 
@@ -603,18 +590,34 @@ def run_audit(
     ############################################################################
     oracle = detection_oracle(detection_tpr, detection_tnr)
 
-    for audit_budget in audit_budgets:
+    for audit_budget in audit_budgets + [audit_pool_size]:
         ############################################################################
         # RUN THE AUDIT SIMULATION                                                 #
         ############################################################################
         # Generate the audit set from the provided seed audit set
-        X_audit, y_audit, A_audit = audit_set(
-            get_subset(features, audit_idx),
-            label.loc[audit_idx],
-            group.loc[audit_idx],
-            audit_budget,
-            seed=seeds["audit_set"],
-        )
+        if audit_budget < audit_pool_size:
+            X_audit, y_audit, A_audit = audit_set(
+                get_subset(features, audit_idx),
+                label.loc[audit_idx],
+                group.loc[audit_idx],
+                audit_budget,
+                seed=seeds["audit_set"],
+            )
+
+        # Compute all the audit metrics on the entire audit queries pool set.
+        # This will be used as the ground truth values for all the metrics.
+        elif audit_budget == audit_pool_size:
+            X_audit, y_audit, A_audit = (
+                get_subset(features, audit_idx),
+                label.loc[audit_idx],
+                group.loc[audit_idx],
+            )
+
+        else:
+            raise ValueError(
+                f"The {audit_budget = } must be less than the {audit_pool_size = }"
+            )
+
         assert (
             A_audit.nunique() == group.nunique()
         ), "There are groups that are not represented in the audit seed data"
@@ -647,7 +650,8 @@ def run_audit(
         )
         inference_time = perf_counter() - inference_time
 
-        # Ask the non manipulated values
+        # Ask the non manipulated values (aka predictions of the model if all
+        # the queries are detected as non-audit)
         y_pred_no_manipulation = model.predict(
             X_queries,
             A_queries,
@@ -661,6 +665,7 @@ def run_audit(
         record = dict(
             # Experiment parameters
             dataset=dataset,
+            base_model_name=base_model_name,
             model_name=model_name,
             model_params=model_params_dict,
             strategy=strategy,
@@ -737,8 +742,10 @@ def base_rates():
                     "len": len(features),
                     "group": sensitive_group,
                     "base_rate": float(
-                        demographic_parity_difference(
-                            y_true=labeldf, y_pred=labeldf, sensitive_features=groupdf
+                        demographic_parity(
+                            y_true=labeldf.to_numpy(),
+                            y_pred=labeldf.to_numpy(),
+                            A=groupdf.to_numpy(),
                         )
                     ),
                 }
@@ -757,9 +764,8 @@ def base_rates():
 def estimation_variance(run: bool = False):
     """Without manipulations, study the budget required to reduce variance and bias"""
 
-    dataset = "ACSEmployment_binarized"
-    # base_model = "skrub_logistic"
-    base_model = "skrub"
+    base_models = {"ACSEmployment_binarized": {"skrub", "skrub_logistic"}}
+    AUDIT_POOL_SIZE = 10_000
     audit_budgets = [
         100,
         500,
@@ -772,21 +778,16 @@ def estimation_variance(run: bool = False):
         3_000,
         4_000,
         5_000,
-        9_000,
+        # 9_000,
     ]
-    # n_repetitions = 15
-    n_repetitions = 5
-    # n_repetitions = 1
+    n_repetitions = 15
     entropy = 12345678
     tnr = 1.0
     tpr = 1.0
-    output = Path(
-        f"generated/estimation_variance{n_repetitions}_{dataset}_{base_model}.jsonl"
-    )
+    output_dir = Path(f"generated/estimation_variance-{n_repetitions}/")
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     if run:
-        output.unlink(missing_ok=True)
-
         # Fix the randomness for everything except the audit_set selection
         seed = np.random.SeedSequence(entropy)
         override_seeds = {
@@ -798,20 +799,128 @@ def estimation_variance(run: bool = False):
             # "audit_set": seed.spawn(1)[0],
         }
 
-        for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
-            print("honest unconstrained")
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="honest",
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budgets=audit_budgets,
-                entropy=int(random_state(seed)),
-                override_seeds=override_seeds,
-                output=output,
+        # Cleanup previous experiments
+        for file in output_dir.glob("*.jsonl"):
+            file.unlink()
+
+        # Train and audit all the base models with no manipulation and no fair
+        # training
+        for dataset, base_model_names in base_models.items():
+            for base_model_name, seed in product(
+                base_model_names, np.random.SeedSequence(entropy).spawn(n_repetitions)
+            ):
+                output = output_dir / f"{dataset}_{base_model_name}.jsonl"
+
+                print(f"{dataset = }, {base_model_name = }")
+                run_audit(
+                    dataset=dataset,
+                    base_model_name=base_model_name,
+                    model_name="unconstrained",
+                    strategy="honest",
+                    detection_tpr=tpr,
+                    detection_tnr=tnr,
+                    audit_budgets=audit_budgets,
+                    audit_pool_size=AUDIT_POOL_SIZE,
+                    entropy=int(random_state(seed)),
+                    override_seeds=override_seeds,
+                    output=output,
+                )
+
+    params = [
+        "dataset",
+        "base_model_name",
+        # The fairness enhancing method, manipulation strategy and audit
+        # detector are all the same so we comment them.
+        #
+        # "model_name", "model_params", "strategy", "strategy_params",
+        # "detection_tpr", "detection_tnr",
+        "audit_budget",
+        # We average over the entropy, thus comment entropy.
+        # "entropy",
+    ]
+    values = [
+        "demographic_parity_audit",
+        "demographic_parity_audit_honest",
+        "demographic_parity_user",
+        "entropy",
+    ]
+
+    # Compute the values for budget = audit pool size, to be used as the ground
+    # truth
+    reference = (
+        pl.read_ndjson(list(output_dir.glob("*.jsonl")))
+        .select(*params, *values)
+        .filter(pl.col("audit_budget") == AUDIT_POOL_SIZE)
+    )
+
+    # Compute the bias and variance of the estimated value compared to the
+    # ground truth
+    estimation_variance = (
+        pl.read_ndjson(list(output_dir.glob("*.jsonl")))
+        .select(*params, *values)
+        .filter(pl.col("audit_budget") < AUDIT_POOL_SIZE)
+        .join(
+            reference,
+            on=["dataset", "base_model_name"],
+            how="inner",
+            suffix="_ref",
+        )
+        # Group by base_model_name and audit budget
+        .group_by(params)
+        # Compute the average and standart deviation over the differents seeds
+        .agg(
+            dp_audit_bias=(
+                pl.col("demographic_parity_audit_honest")
+                - pl.col("demographic_parity_audit_honest_ref")
             )
+            .abs()
+            .mean(),
+            dp_audit_std=(
+                pl.col("demographic_parity_audit_honest")
+                - pl.col("demographic_parity_audit_honest_ref")
+            )
+            .abs()
+            .std(),
+        )
+        # Compute the "error bars" and convert the struct columns into
+        # jsonstring columns for plotly to be happy
+        .with_columns(
+            params_str=pl.concat_str(
+                pl.col(params).exclude("audit_budget"), separator=","
+            )
+        )
+        # Sort because plotly does not
+        .sort("audit_budget")
+    )
+
+    fig = px.line(
+        estimation_variance,
+        x="audit_budget",
+        y="dp_audit_bias",
+        color="params_str",
+        error_y="dp_audit_std",
+        labels={
+            "dp_audit_bias": r"$\mathbb{E}_S[|\hat{\mu}(S,h) - \mu(h)|]$",
+            "audit_budget": r"$|S|$",
+        },
+        height=800,
+    )
+    fig.add_hline(
+        reference["demographic_parity_audit_honest"].mean(),
+        line_dash="dash",
+        annotation_text="demographic parity (avg over models and runs)",
+    )
+    fig.update_traces(marker_size=20)
+    fig.update_layout(
+        title=dict(
+            text="Bias and variance of the demographic parity estimation",
+            subtitle=dict(
+                text=f"y-axis value of each point is the bias over {n_repetitions} runs. The size of the error bars is the corresponding standard deviation.",
+                font=dict(color="gray", size=13),
+            ),
+        )
+    )
+    fig.show()
 
 
 @app.command()
@@ -855,6 +964,7 @@ def manipulation_stealthiness(run: bool = False):
                 detection_tpr=tpr,
                 detection_tnr=tnr,
                 audit_budgets=audit_budget,
+                audit_pool_size=10_000,
                 entropy=int(random_state(seed)),
                 override_seeds=override_seeds,
                 output=output,
@@ -869,6 +979,7 @@ def manipulation_stealthiness(run: bool = False):
                 detection_tpr=tpr,
                 detection_tnr=tnr,
                 audit_budgets=audit_budget,
+                audit_pool_size=10_000,
                 entropy=int(random_state(seed)),
                 override_seeds=override_seeds,
                 output=output,
@@ -886,6 +997,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
+                    audit_pool_size=10_000,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -904,6 +1016,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
+                    audit_pool_size=10_000,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -922,6 +1035,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
+                    audit_pool_size=10_000,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -930,6 +1044,7 @@ def manipulation_stealthiness(run: bool = False):
 
     params = [
         "dataset",
+        "base_model_name",
         "model_name",
         # "model_params",
         "strategy",
