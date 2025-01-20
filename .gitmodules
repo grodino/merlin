@@ -1,0 +1,3 @@
+[submodule "fairlearn"]
+	path = fairlearn
+	url = git@github.com:fairlearn/fairlearn.git

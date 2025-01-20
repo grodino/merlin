@@ -65,6 +65,7 @@ from merlin.datasets import CelebADataset
 
 from merlin.helpers.dataset import load_whole_dataset
 
+
 def get_subset(data, subset):
     if isinstance(data, pd.DataFrame) or isinstance(data, pd.Series):
         # Use .loc[] for Pandas
@@ -73,7 +74,10 @@ def get_subset(data, subset):
         # Use NumPy-style indexing for arrays
         return data[subset]
     else:
-        raise TypeError("Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy/torch array.")
+        raise TypeError(
+            "Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy/torch array."
+        )
+
 
 app = typer.Typer()
 ModelName = Annotated[str, "The name of the estimator trained by the platform"]
@@ -168,14 +172,13 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
             transformation = transformation_factory(meanstd)
         label_col = "Smiling"
         group_col = "Male"
-        celeba = torch.utils.data.Subset(CelebADataset(
-            target_columns=[
-                label_col,
-                group_col
-            ],
-            transform=transformation
-        ), indices=range(1000))
-        
+        celeba = torch.utils.data.Subset(
+            CelebADataset(
+                target_columns=[label_col, group_col], transform=transformation
+            ),
+            indices=range(1000),
+        )
+
         features, [label, group] = load_whole_dataset(celeba)
         label = pd.Series(label)
         group = pd.Series(group)
@@ -307,7 +310,12 @@ def generate_model(
             model = ROCMitigation(estimator, theta, **manipulation_kwargs)
 
         case "model_swap":
-            model = ModelSwap(estimator, **manipulation_kwargs)
+            if base_model_name == "torch":
+                prefit = True
+            else:
+                prefit = False
+
+            model = ModelSwap(estimator, prefit=prefit, **manipulation_kwargs)
 
         case "always_yes":
             model = AlwaysYes(estimator, **manipulation_kwargs)
@@ -331,8 +339,16 @@ def generate_model(
             raise NotImplementedError(
                 f"The manipulation strategy {strategy} is not supported"
             )
+
+    # If the base model is a torch model, fetch the pretrained weights.
+    #
+    # FIXME: for now, this only supports torch models if there it is wrapped
+    # only once (e.g. just a manupulation or just a fair training approach).
+    # This does not spport combinations of both.
     if base_model_name == "torch":
         skorch_wrapper = model.estimator
+        assert isinstance(skorch_wrapper, PretrainedFixedNetClassifier)
+
         frozen_params = model_params.get("frozen_params", True)
         if "weight_path" in model_params or frozen_params:
             skorch_wrapper.initialize()
@@ -1117,8 +1133,8 @@ def lenet():
         dataset="celeba",
         base_model_name="torch",
         model_name="unconstrained",
-        model_params="model_architecture=lenet,num_classes=2",
-        strategy="honest",
+        model_params="model_architecture=resnet18,num_classes=2",
+        strategy="model_swap",
         strategy_params="",
         audit_budgets=100,
         detection_tpr=1.0,

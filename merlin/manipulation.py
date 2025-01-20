@@ -261,11 +261,11 @@ class ModelSwap(ManipulatedClassifier):
     """When audit queries are detected, swap the "real" classifier for an
     optimally fair one."""
 
-    def __init__(self, estimator, **kwargs) -> None:
+    def __init__(self, estimator, prefit: bool = False, **kwargs) -> None:
         super().__init__(estimator, **kwargs)
 
         self.fair_estimator = ThresholdOptimizer(
-            estimator=estimator, constraints="demographic_parity"
+            estimator=estimator, constraints="demographic_parity", prefit=prefit
         )
 
     def fit(self, X, y, sensitive_features=None) -> Self:
@@ -291,21 +291,42 @@ class ModelSwap(ManipulatedClassifier):
 
         y_pred = np.zeros(len(X))
 
-        # Output on non audit points come from the unconstrained model
-        if np.sum(~audit_queries_mask) > 0:
-            y_pred[~audit_queries_mask] = self._predict(
-                X.loc[~audit_queries_mask],
-                sensitive_features=sensitive_features.loc[~audit_queries_mask],
-                random_state=random_state,
-            )
+        # If we are looking at images, we expect a numpy array. It's shape
+        # should be (batch size, channels, H, W). Otherwise, we expect a pandas
+        # dataframe.
+        if isinstance(X, np.ndarray):
+            # Output on non audit points come from the unconstrained model
+            if np.sum(~audit_queries_mask) > 0:
+                y_pred[~audit_queries_mask] = self._predict(
+                    X[~audit_queries_mask, :, :, :],
+                    sensitive_features=sensitive_features.loc[~audit_queries_mask],
+                    random_state=random_state,
+                )
 
-        # Output on audit points come from the fair model
-        if np.sum(audit_queries_mask) > 0:
-            y_pred[audit_queries_mask] = self.fair_estimator.predict(
-                X.loc[audit_queries_mask],
-                sensitive_features=sensitive_features.loc[audit_queries_mask],
-                random_state=random_state,
-            )
+            # Output on audit points come from the fair model
+            if np.sum(audit_queries_mask) > 0:
+                y_pred[audit_queries_mask] = self.fair_estimator.predict(
+                    X[audit_queries_mask, :, :, :],
+                    sensitive_features=sensitive_features.loc[audit_queries_mask],
+                    random_state=random_state,
+                )
+
+        else:
+            # Output on non audit points come from the unconstrained model
+            if np.sum(~audit_queries_mask) > 0:
+                y_pred[~audit_queries_mask] = self._predict(
+                    X.loc[~audit_queries_mask],
+                    sensitive_features=sensitive_features.loc[~audit_queries_mask],
+                    random_state=random_state,
+                )
+
+            # Output on audit points come from the fair model
+            if np.sum(audit_queries_mask) > 0:
+                y_pred[audit_queries_mask] = self.fair_estimator.predict(
+                    X.loc[audit_queries_mask],
+                    sensitive_features=sensitive_features.loc[audit_queries_mask],
+                    random_state=random_state,
+                )
 
         return y_pred
 

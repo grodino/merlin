@@ -7,7 +7,7 @@ dependencies = [
     "polars",
     "matplotlib",
     "folktables",
-    "scikit-learn",
+    "scikit-learn>=1.6.0",
     "pyarrow",
     "skrub",
     "seaborn",
@@ -21,7 +21,7 @@ dependencies = [
     "kagglehub",
     "wandb",
     "datasets",
-    "skorch"
+    "skorch",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +32,8 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64", "osx-64"]
 
 [tool.pixi.pypi-dependencies]
-fairlearn = { git = "https://github.com/fairlearn/fairlearn/" }
+# fairlearn = { git = "https://github.com/fairlearn/fairlearn/" }
+fairlearn = { path = "./fairlearn/", editable = true }
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
