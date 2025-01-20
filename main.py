@@ -181,7 +181,7 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
 
         features, [label, group] = load_whole_dataset(celeba)
         label = pd.Series(label)
-        group = pd.Series(group)
+        group = pd.Series(group).astype(bool)
     else:
         raise NotImplementedError(f"The dataset {dataset} is not supported")
 
@@ -1134,8 +1134,9 @@ def lenet():
         base_model_name="torch",
         model_name="unconstrained",
         model_params="model_architecture=resnet18,num_classes=2",
-        strategy="label_transport",
-        strategy_params="tolerated_unfairness=0.1",
+        strategy="ROC_mitigation",
+        # strategy_params="tolerated_unfairness=0.1",
+        strategy_params="theta=0.55",
         audit_budgets=100,
         detection_tpr=1.0,
         detection_tnr=1.0,
