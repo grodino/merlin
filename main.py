@@ -606,9 +606,11 @@ def run_audit(
     model.fit(X_train, y_train, A_train)
     fit_time = perf_counter() - fit_time
 
-    training_perfs = {
-        "train_accuracy": model.score(X_train, y_train, A_train),
-    }
+    training_perfs = {}
+    if strategy == "honest":
+        training_perfs["train_accuracy"] = model.score(X_train, y_train, A_train)
+    else:
+        print("TODO FIX: Skipping training performance evaluation for non-honest strategies")
 
     ############################################################################
     # GENERATE THE AUDIT DETECTION ORACLE                                      #
@@ -1303,9 +1305,10 @@ def lenet():
         base_model_name="torch",
         model_name="unconstrained",
         model_params="model_architecture=resnet18,num_classes=2",
-        strategy="ROC_mitigation",
+        strategy="model_swap",
         # strategy_params="tolerated_unfairness=0.1",
-        strategy_params="theta=0.55",
+        # strategy_params="theta=0.55",
+        # strategy_params="epsilon=0.1",
         audit_budgets=100,
         detection_tpr=1.0,
         detection_tnr=1.0,
