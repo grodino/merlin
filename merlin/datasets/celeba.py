@@ -5,7 +5,7 @@ import PIL.Image
 import pandas as pd
 
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+
 
 class CelebADataset(Dataset):
     """
@@ -13,14 +13,34 @@ class CelebADataset(Dataset):
     """
     kagglehub_path = "jessicali9530/celeba-dataset"
     
-    def __init__(self, *, 
-                target_columns: list[str] | None=None, 
-                transform=None):
+    # Define image ranges for each split
+    SPLIT_RANGES = {
+        "train": (1, 162770),
+        "val": (162771, 182637),
+        "test": (182638, 202599),
+    }
+
+    def __init__(self, *,
+                 split: str = "train",  # Specify the partition: 'train', 'val', or 'test'
+                 target_columns: list[str] | None = None,
+                 transform=None):
+        """
+        Initialize the dataset.
+
+        Args:
+            split (str): The partition of the dataset ('train', 'val', 'test').
+            target_columns (list[str] | None): The target columns for labels.
+            transform: Optional transformation to be applied on the images.
+        """
+        assert split in self.SPLIT_RANGES, f"Invalid split: {split}. Must be one of {list(self.SPLIT_RANGES.keys())}"
+        
         celeba_path = kagglehub.dataset_download(self.kagglehub_path)
         self._attr_df = CelebADataset._load_attr_df(celeba_path)
+        self._attr_df = CelebADataset._filter_split(self._attr_df, split)
+
         self.target_columns = target_columns
         self.transform = transform
-        
+
     @staticmethod
     def _load_attr_df(path):
         attr_df = pd.read_csv(os.path.join(path, "list_attr_celeba.csv"))
@@ -28,6 +48,21 @@ class CelebADataset(Dataset):
         image_path = os.path.join(path, "img_align_celeba", "img_align_celeba")
         attr_df["image_path"] = attr_df["image_id"].apply(lambda x: os.path.join(image_path, x))
         return attr_df
+    
+    @staticmethod
+    def _filter_split(attr_df, split):
+        """
+        Filter the DataFrame to include only rows corresponding to the specified split.
+
+        Args:
+            attr_df (pd.DataFrame): The attribute DataFrame.
+            split (str): The desired split ('train', 'val', 'test').
+
+        Returns:
+            pd.DataFrame: The filtered DataFrame.
+        """
+        start_idx, end_idx = CelebADataset.SPLIT_RANGES[split]
+        return attr_df.iloc[start_idx - 1:end_idx]
     
     def __len__(self):
         return len(self._attr_df)
