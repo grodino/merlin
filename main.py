@@ -39,6 +39,7 @@ from merlin.manipulation import (
     RandomizedResponse,
     ROCMitigation,
     LabelTransport,
+    subsample_mask,
 )
 from merlin.utils import extract_params, random_state
 
@@ -476,6 +477,7 @@ def run_audit(
     base_model_name: str = "skrub",
     model_name: ModelName = "unconstrained",
     model_params: str = "",
+    training_imbalance: float | None = None,
     strategy: ManipulationStrategy = "honest",
     strategy_params: str = "",
     audit_budgets: int | list[int] = 1_000,
@@ -492,7 +494,15 @@ def run_audit(
     2. Implements the platform model training
     3. Simulates the audit-points detection mechanism used by the platform
     4. Samples audit points and simulate the auditor querying the platform.
-    5. Compute the true/estimated fairness/performance metrics and audit manipulation detection
+    5. Compute the true/estimated fairness/performance metrics and audit
+       manipulation detection
+
+    Parameters
+    ----------
+
+    training_imbalance: float, optional
+        If not None, a percentage (equal to training_imbalance) of the training data with positive sensitive
+        attribute will be removed to simulate biased training data. default: None
     """
     randomness = iter(np.random.SeedSequence(entropy).spawn(6))
     seeds = {
@@ -533,23 +543,34 @@ def run_audit(
     features, label, group = get_data(dataset, binarize, **extra_args)
 
     # The auditor has access to the same distribution as the model owner but
-    # they do not have the exact same points
+    # they do not have the exact same points.
+    #
+    # NOTE: to make sure that the audit data distribution really represents "the
+    # real data", we do not stratify the splits sampling.
     train_test_idx, audit_idx = train_test_split(
         np.arange(len(features)),
         test_size=audit_pool_size,
         random_state=random_state(seeds["data_split"]),
-        stratify=group.astype(str) + "_" + label.astype(str),
     )
 
     # The model owner splits its data into train/test
     train_idx, test_idx = train_test_split(
-        train_test_idx,
-        test_size=0.3,
-        random_state=random_state(seeds["train_test"]),
-        stratify=group.loc[train_test_idx].astype(str)
-        + "_"
-        + label.loc[train_test_idx].astype(str),
+        train_test_idx, test_size=0.3, random_state=random_state(seeds["train_test"])
     )
+
+    # Simulate a bias against one particular subgroup in the training data by
+    # removing training samples with positive sensitive attribute.
+    if training_imbalance is not None:
+        train_idx_is_sensitive = (group.loc[train_idx] == True).to_numpy()
+        n_train_sensitive = np.sum(train_idx_is_sensitive)
+        train_idx_is_sensitive_subsampled = subsample_mask(
+            train_idx_is_sensitive.copy(),
+            num=int((1 - training_imbalance) * n_train_sensitive),
+            seed=seeds["train_test"],
+        )
+        train_idx = train_idx[
+            (~train_idx_is_sensitive) | train_idx_is_sensitive_subsampled
+        ]
 
     X_train = get_subset(features, train_idx)
     y_train = label.loc[train_idx]
@@ -560,11 +581,11 @@ def run_audit(
     ), "There are groups that are not represented in the train data"
     assert (
         group.loc[test_idx].nunique() == group.nunique()
-    ), "There are groups that are not represented in the train data"
-    assert (
-        len(features)
-        == np.unique(np.concatenate([train_idx, test_idx, audit_idx])).shape[0]
-    )
+    ), "There are groups that are not represented in the test data."
+    # assert (
+    #     len(features)
+    #     == np.unique(np.concatenate([train_idx, test_idx, audit_idx])).shape[0]
+    # ), "There are overlapping indices between the train, test and audit sets"
 
     ############################################################################
     # GENERATE AND TRAIN THE MANIPULATED MODEL                                 #
@@ -580,17 +601,21 @@ def run_audit(
         strategy_params_dict,
         seeds["model"],
     )
-    fit_time = perf_counter()
 
+    fit_time = perf_counter()
     model.fit(X_train, y_train, A_train)
     fit_time = perf_counter() - fit_time
+
+    training_perfs = {
+        "train_accuracy": model.score(X_train, y_train, A_train),
+    }
 
     ############################################################################
     # GENERATE THE AUDIT DETECTION ORACLE                                      #
     ############################################################################
     oracle = detection_oracle(detection_tpr, detection_tnr)
 
-    for audit_budget in audit_budgets + [audit_pool_size]:
+    for audit_budget in audit_budgets:
         ############################################################################
         # RUN THE AUDIT SIMULATION                                                 #
         ############################################################################
@@ -668,6 +693,7 @@ def run_audit(
             base_model_name=base_model_name,
             model_name=model_name,
             model_params=model_params_dict,
+            training_imbalance=training_imbalance,
             strategy=strategy,
             strategy_params=strategy_params_dict,
             audit_budget=audit_budget,
@@ -676,6 +702,7 @@ def run_audit(
             entropy=entropy,
             fit_time=fit_time,
             inference_time=inference_time,
+            **training_perfs,
             **compute_metrics(
                 X_queries,
                 y_queries,
@@ -778,7 +805,7 @@ def estimation_variance(run: bool = False):
         3_000,
         4_000,
         5_000,
-        # 9_000,
+        AUDIT_POOL_SIZE,
     ]
     n_repetitions = 15
     entropy = 12345678
@@ -920,6 +947,137 @@ def estimation_variance(run: bool = False):
             ),
         )
     )
+    fig.show()
+
+
+@app.command()
+def training_imbalance(run: bool = False):
+    """Explore how much training imbalance is needed to significantly impact the
+    demographic parity of the resulting model"""
+
+    base_models = {"ACSEmployment_binarized": {"skrub", "skrub_logistic"}}
+    AUDIT_POOL_SIZE = 10_000
+    n_repetitions = 5
+    entropy = 12345678
+    tnr = 1.0
+    tpr = 1.0
+    training_imbalances = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    output_dir = Path(f"generated/training_imbalance-{n_repetitions}/")
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    if run:
+        # Fix the randomness for everything except the audit_set selection
+        seed = np.random.SeedSequence(entropy)
+        override_seeds = {
+            "data_split": seed.spawn(1)[0],
+            # "train_test": seed.spawn(1)[0],
+            "model": seed.spawn(1)[0],
+            "model_inference": seed.spawn(1)[0],
+            "audit_detector": seed.spawn(1)[0],
+            "audit_set": seed.spawn(1)[0],
+        }
+
+        # Cleanup previous experiments
+        for file in output_dir.glob("*.jsonl"):
+            file.unlink()
+
+        # Train and audit all the base models with no manipulation and no fair
+        # training
+        for dataset, base_model_names in base_models.items():
+            for base_model_name, training_imbalance, seed in product(
+                base_model_names,
+                training_imbalances,
+                np.random.SeedSequence(entropy).spawn(n_repetitions),
+            ):
+                output = (
+                    output_dir
+                    / f"{dataset}_{base_model_name}_{training_imbalance}.jsonl"
+                )
+
+                run_audit(
+                    dataset=dataset,
+                    base_model_name=base_model_name,
+                    model_name="unconstrained",
+                    training_imbalance=training_imbalance,
+                    strategy="honest",
+                    detection_tpr=tpr,
+                    detection_tnr=tnr,
+                    audit_budgets=AUDIT_POOL_SIZE,
+                    audit_pool_size=AUDIT_POOL_SIZE,
+                    entropy=int(random_state(seed)),
+                    override_seeds=override_seeds,
+                    output=output,
+                )
+
+    params = ["dataset", "base_model_name", "training_imbalance"]
+    values = [
+        "demographic_parity_audit_honest",
+        "utility_audit",
+        "utility_user",
+        "train_accuracy",
+        # "entropy",
+    ]
+
+    # Compute the values for budget = audit pool size
+    training_info = (
+        pl.read_ndjson(list(output_dir.glob("*.jsonl")))
+        .filter(pl.col("audit_budget") == AUDIT_POOL_SIZE)
+        .select(*params, *values)
+        # Group by parameters (except budget since we look at the metrics
+        # computed on the entire audit queries pool)
+        .group_by("dataset", "base_model_name", "training_imbalance")
+        # Compute the average over the different seeds
+        .agg(
+            pl.col(values).exclude("entropy").mean(),
+            pl.col(values).exclude("entropy").std().name.suffix("_std"),
+        )
+        .unpivot(on=values, index=params)
+    )
+    training_info_std = (
+        pl.read_ndjson(list(output_dir.glob("*.jsonl")))
+        .filter(pl.col("audit_budget") == AUDIT_POOL_SIZE)
+        .select(*params, *values)
+        # Group by parameters (except budget since we look at the metrics
+        # computed on the entire audit queries pool)
+        .group_by("dataset", "base_model_name", "training_imbalance")
+        # Compute the average over the different seeds
+        .agg(
+            pl.col(values).exclude("entropy").std().name.suffix("_std"),
+        )
+        .unpivot(
+            on=[name + "_std" for name in values], index=params, value_name="value_std"
+        )
+        .with_columns(underlying_variable=pl.col("variable").str.replace("_std", ""))
+    )
+    training_info = (
+        training_info.join(
+            training_info_std,
+            left_on=params + ["variable"],
+            right_on=params + ["underlying_variable"],
+        )
+        .with_columns(
+            params_str=pl.concat_str(
+                pl.col(params).exclude("audit_budget", "training_imbalance"),
+                separator=",",
+            )
+        )
+        .sort("base_model_name", "training_imbalance")
+    )
+    print(training_info)
+
+    fig = px.line(
+        training_info,
+        x="training_imbalance",
+        y="value",
+        facet_col="variable",
+        error_y="value_std",
+        color="params_str",
+        markers=True,
+        height=800,
+    )
+    # fig.update_traces(marker_size=20)
+    fig.update_yaxes(matches=None)
+    fig.for_each_yaxis(lambda yaxis: yaxis.update(showticklabels=True))
     fig.show()
 
 
@@ -1081,6 +1239,7 @@ def manipulation_stealthiness(run: bool = False):
         # jsonstring columns for plotly to be happy
         .with_columns(
             pl.col("demographic_parity_audit_std") / sqrt(n_repetitions),
+            pl.col("hidden_demographic_parity_std") / sqrt(n_repetitions),
             pl.col("auditset_hamming_std") / sqrt(n_repetitions),
             pl.col("manipulation_hamming_std") / sqrt(n_repetitions),
             pl.col("strategy_params").struct.json_encode(),
@@ -1093,11 +1252,11 @@ def manipulation_stealthiness(run: bool = False):
     fig = px.scatter(
         records,
         x="auditset_hamming",
-        y="demographic_parity_audit",
+        y="hidden_demographic_parity",
         color="strategy",
         category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
         error_x="auditset_hamming_std",
-        error_y="demographic_parity_audit_std",
+        error_y="hidden_demographic_parity_std",
         hover_data=["strategy_params"],
     )
     fig.update_traces(marker_size=20)
@@ -1106,11 +1265,11 @@ def manipulation_stealthiness(run: bool = False):
     fig = px.scatter(
         records,
         x="manipulation_hamming",
-        y="demographic_parity_audit",
+        y="hidden_demographic_parity",
         color="strategy",
         category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
         error_x="manipulation_hamming_std",
-        error_y="demographic_parity_audit_std",
+        error_y="hidden_demographic_parity_std",
         hover_data=["strategy_params"],
     )
     fig.update_traces(marker_size=20)

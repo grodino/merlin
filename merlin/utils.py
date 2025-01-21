@@ -17,10 +17,10 @@ def random_state(seed: np.random.SeedSequence) -> np.int32:
     return seed.generate_state(1)[0]
 
 
-
 def add_parser(f):
     f.parser = ParameterParser()
     return f
+
 
 @add_parser
 def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
