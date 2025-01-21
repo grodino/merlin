@@ -4,6 +4,7 @@ from typing import Literal, Self
 import ot
 import numpy as np
 import cvxpy as cp
+import torch
 from fairlearn.postprocessing import ThresholdOptimizer
 from scipy import sparse
 from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin
@@ -294,7 +295,7 @@ class ModelSwap(ManipulatedClassifier):
         # If we are looking at images, we expect a numpy array. It's shape
         # should be (batch size, channels, H, W). Otherwise, we expect a pandas
         # dataframe.
-        if isinstance(X, np.ndarray):
+        if isinstance(X, (np.ndarray, torch.Tensor)):
             # Output on non audit points come from the unconstrained model
             if np.sum(~audit_queries_mask) > 0:
                 y_pred[~audit_queries_mask] = self._predict(
