@@ -168,7 +168,9 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
         group_col = "Male"
         celeba = torch.utils.data.Subset(
             CelebADataset(
-                target_columns=[label_col, group_col], transform=transformation
+                target_columns=[label_col, group_col],
+                transform=transformation,
+                split="test",
             ),
             indices=range(1000),
         )
