@@ -347,7 +347,8 @@ def generate_model(
         if "weight_path" in model_params or frozen_params:
             skorch_wrapper.initialize()
         if "weight_path" in model_params:
-            skorch_wrapper.load_state_dict(torch.load(model_params["weight_path"]))
+            state_dict = torch.load(model_params["weight_path"], weights_only=True)
+            skorch_wrapper.module_.load_state_dict(state_dict)
     return model
 
 
@@ -1304,8 +1305,8 @@ def lenet():
         dataset="celeba",
         base_model_name="torch",
         model_name="unconstrained",
-        model_params="model_architecture=resnet18,num_classes=2",
-        strategy="model_swap",
+        model_params="model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth",
+        strategy="honest",
         # strategy_params="tolerated_unfairness=0.1",
         # strategy_params="theta=0.55",
         # strategy_params="epsilon=0.1",

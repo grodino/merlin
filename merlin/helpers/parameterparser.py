@@ -12,14 +12,14 @@ class ParameterParser:
         result = parser.parse("param1=value1,param2.subparam=value2")
         # result will be {'param1': 'value1', 'param2': {'subparam': 'value2'}}
     """
-    grammar = """
+    grammar = r"""
         start: attr ("," attr)*
         attr: attr_name "=" attr_value
         attr_name: CNAME ("." CNAME)*
         attr_value: quoted_string | unquoted_string | FLOAT | INT
 
         quoted_string: ESCAPED_STRING
-        unquoted_string: /[a-zA-Z0-9_]+/ 
+        unquoted_string: /[a-zA-Z0-9_\/\.\-]+/
 
         // Terminals
         %import common.CNAME

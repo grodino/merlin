@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -41,7 +42,7 @@ def eval_accuracy(model, eval_loader, criterion, device):
     return accuracy, eval_loss
 
 
-def train_model(model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=10, best_model_save_path=None):
+def train_model(model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=10):
     """
     Trains a given model using the specified optimizer and loss criterion.
 
@@ -56,6 +57,11 @@ def train_model(model, optimizer, criterion, train_loader, validation_loader, de
     Returns:
         None
     """
+    best_model_save_dir = os.path.join("data", "models")
+    if not os.path.exists(best_model_save_dir):
+        os.makedirs(best_model_save_dir)
+    best_model_save_path = os.path.join(best_model_save_dir, "lenet_celeba.pth")
+
     best_acc = -1
     model.to(device)
     for epoch in range(num_epochs):
@@ -71,7 +77,7 @@ def train_model(model, optimizer, criterion, train_loader, validation_loader, de
             optimizer.step()
 
             step += 1
-            if step % 100 == 0:
+            if step % 200 == 0:
                 val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
                 if val_acc > best_acc:
                     best_acc = val_acc
@@ -112,7 +118,6 @@ def load_dataset():
     
     train_dataset = CelebADataset(split="train", target_columns=[label_col], transform=transformation)
     val_dataset = CelebADataset(split="val", target_columns=[label_col], transform=transformation)
-    test_dataset = CelebADataset(split="test", target_columns=[label_col], transform=transformation)
 
     train_dataloader = DataLoader(
         train_dataset,
