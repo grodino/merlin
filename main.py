@@ -531,6 +531,8 @@ def run_audit(
     else:
         binarize = False
 
+    # Extract the model params from the params string. For now, we assume that
+    # there are only float params. Should be changed.
     model_params_dict = extract_params(model_params)
     strategy_params_dict = extract_params(strategy_params)
 
@@ -579,6 +581,10 @@ def run_audit(
     y_train = label.loc[train_idx]
     A_train = group.loc[train_idx]
 
+    X_test = get_subset(features, test_idx)
+    y_test = label.loc[test_idx]
+    A_test = group.loc[test_idx]
+
     assert (
         A_train.nunique() == group.nunique()
     ), "There are groups that are not represented in the train data"
@@ -593,9 +599,6 @@ def run_audit(
     ############################################################################
     # GENERATE AND TRAIN THE MANIPULATED MODEL                                 #
     ############################################################################
-    # Extract the model params from the params string. For now, we assume that
-    # there are only float params. Should be changed.
-
     model = generate_model(
         base_model_name,
         model_name,
@@ -605,15 +608,32 @@ def run_audit(
         seeds["model"],
     )
 
+    # Fit the model
     fit_time = perf_counter()
     model.fit(X_train, y_train, A_train)
     fit_time = perf_counter() - fit_time
 
-    training_perfs = {}
-    if strategy == "honest":
-        training_perfs["train_accuracy"] = model.score(X_train, y_train, A_train)
-    else:
-        print("TODO FIX: Skipping training performance evaluation for non-honest strategies")
+    # Evaluate the perfs on train and test set (when not manipulated)
+    training_perfs = {
+        "train_accuracy": np.mean(
+            model.predict(
+                X_train,
+                A_train,
+                audit_queries_mask=np.zeros_like(y_train, dtype=bool),
+                random_state=random_state(seeds["model"]),
+            )
+            == y_train
+        ),
+        "test_accuracy": np.mean(
+            model.predict(
+                X_test,
+                A_test,
+                audit_queries_mask=np.zeros_like(y_test, dtype=bool),
+                random_state=random_state(seeds["model"]),
+            )
+            == y_test
+        ),
+    }
 
     ############################################################################
     # GENERATE THE AUDIT DETECTION ORACLE                                      #
