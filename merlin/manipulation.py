@@ -78,9 +78,9 @@ class ManipulatedClassifier(ABC, BaseEstimator, MetaEstimatorMixin, ClassifierMi
     def predict(
         self,
         X,
-        sensitive_features=None,
-        audit_queries_mask=None,
-        random_state=None,
+        sensitive_features,
+        audit_queries_mask,
+        random_state,
     ) -> np.ndarray: ...
 
 
@@ -461,8 +461,8 @@ class LabelTransport(ManipulatedClassifier):
             if self.tolerated_unfairness > 0.0:
                 alpha = 1 - self.tolerated_unfairness
 
-                plan_pos = (1 - alpha) * np.eye(2) + alpha * plan_pos
-                plan_neg = (1 - alpha) * np.eye(2) + alpha * plan_neg
+                plan_pos = (1 - alpha) * np.eye(2) + alpha * plan_pos  # type: ignore
+                plan_neg = (1 - alpha) * np.eye(2) + alpha * plan_neg  # type: ignore
 
             # To get back the number of points to flip, we un-normalize the
             # transport plan.
@@ -470,7 +470,7 @@ class LabelTransport(ManipulatedClassifier):
             n_flips_neg = np.round(n_neg * plan_neg)
 
             y_new = y.copy()
-            rs = self.random_state
+            rs: int = self.random_state  # type: ignore
             # weight = np.abs(
             #     y_proba[audit_queries_mask][:, 0] - y_proba[audit_queries_mask][:, 1]
             # )

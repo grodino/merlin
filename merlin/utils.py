@@ -37,7 +37,7 @@ def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
     if isinstance(params_str, dict):
         return params_str
 
-    return extract_params.parser.parse(params_str)
+    return extract_params.parser.parse(params_str)  # type: ignore
 
 
 def subsample_mask(

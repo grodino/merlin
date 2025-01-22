@@ -33,6 +33,12 @@ class AuditDetector:
         return result
 
 
+def detection_oracle(tpr: float, tnr: float):
+    """Detection oracle factory"""
+
+    return AuditDetector(tpr, tnr)
+
+
 def test_detector():
     """Test whether the observed true/false positive rates match the requested
     rates"""

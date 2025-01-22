@@ -11,9 +11,6 @@ def load_whole_dataset(dataset):
     Returns:
         Tensor: A tensor containing all the data from the dataset.
     """
-    dataloader = DataLoader(
-        dataset,
-        batch_size=len(dataset),
-        shuffle=False
-    )
+
+    dataloader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
     return next(iter(dataloader))

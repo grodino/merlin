@@ -2,64 +2,27 @@ import json
 from itertools import product
 from math import sqrt
 from pathlib import Path
-from typing import Annotated, Any, Iterable
-from functools import cache
+from typing import Annotated
 from time import perf_counter
 
 import folktables
 import numpy as np
-from numpy.random import SeedSequence
 import pandas as pd
 import polars as pl
-import sklearn as sk
 import typer
 
 import torch
 
-from fairlearn.postprocessing import ThresholdOptimizer
-from fairlearn.reductions import (
-    DemographicParity,
-    ExponentiatedGradient,
-)
 from folktables import ACSDataSource, state_list
 from plotly import express as px
-from sklearn.metrics import accuracy_score
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.model_selection import train_test_split
-from skrub import tabular_learner
 
-from merlin.audit import audit_set, demographic_parity, performance_parity
-from merlin.detection import AuditDetector
-from merlin.manipulation import (
-    AlwaysNo,
-    AlwaysYes,
-    HonestClassifier,
-    LinearRelaxation,
-    ModelSwap,
-    RandomizedResponse,
-    ROCMitigation,
-    LabelTransport,
-    ThresholdManipulation,
-    subsample_mask,
-)
-from merlin.utils import extract_params, get_subset, random_state
+from merlin.audit import audit_set, compute_metrics, demographic_parity
+from merlin.detection import detection_oracle
+from merlin.factory import generate_model
+from merlin.utils import extract_params, get_subset, random_state, subsample_mask
 
-import skorch as scotch
-from torchvision import transforms
+from merlin.datasets import get_data
 
-from merlin.models.torch import (
-    MODEL_ARCHITECTURE_FACTORY,
-    MODEL_INPUT_TRANSFORMATION_FACTORY,
-)
-from merlin.models.skorch import PretrainedFixedNetClassifier
-
-from merlin.helpers import ParameterParser
-from merlin.helpers.transform import make_transformation
-
-from merlin.datasets import CelebADataset
-
-from merlin.helpers.dataset import load_whole_dataset
 
 app = typer.Typer()
 ModelName = Annotated[str, "The name of the estimator trained by the platform"]
@@ -70,438 +33,6 @@ Dataset = Annotated[
     str,
     "The dataset on which the model is trained and frow which the audit set is sampled",
 ]
-
-
-@cache
-def get_data(
-    dataset: Dataset,
-    audit_pool_size: int,
-    binarize_group: bool = False,
-    traintest_seed: SeedSequence | None = None,
-    auditset_seed: SeedSequence | None = None,
-    **extra_args,
-):
-    if dataset == "ACSEmployment":
-        data_source = ACSDataSource(
-            survey_year="2018", horizon="1-Year", survey="person"
-        )
-        # group_col = "AGEP"
-        group_col = "RAC1P"
-
-        # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
-        # RAC1P Character 1
-        # Recoded detailed race code
-        # 1 .White alone
-        # 2 .Black or African American alone
-        # 3 .American Indian alone
-        # 4 .Alaska Native alone
-        # 5 .American Indian and Alaska Native tribes specified; or
-        #   .American Indian or Alaska Native, not specified and no other
-        #   .races
-        # 6 .Asian alone
-        # 7 .Native Hawaiian and Other Pacific Islander alone
-        # 8 .Some Other Race alone
-        # 9 .Two or More Races²
-        ACSEmployment = folktables.BasicProblem(
-            features=[
-                "AGEP",
-                "SCHL",
-                "MAR",
-                "RELP",  # Not present in 2019
-                "DIS",
-                "ESP",
-                "CIT",
-                "MIG",
-                "MIL",
-                "ANC",
-                "NATIVITY",
-                "DEAR",
-                "DEYE",
-                "DREM",
-                "SEX",
-                "RAC1P",
-            ],
-            target="ESR",
-            target_transform=lambda x: x == 1,
-            group=group_col,
-            preprocess=lambda x: x,
-            # postprocess=lambda x: np.nan_to_num(x, -1),
-        )
-
-        if binarize_group:
-            acs_data = data_source.get_data(states=["MN"], download=True)
-            features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-            label: pd.Series = labeldf["ESR"].astype(int)
-            group: pd.Series = groupdf[group_col] != 1
-
-        else:
-            acs_data = data_source.get_data(states=["MN"], download=True)
-            features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-            label: pd.Series = labeldf["ESR"].astype(int)
-            group: pd.Series = groupdf[group_col].astype(int)
-
-            # Remove groups that have too few representatives
-            n_per_group = group.value_counts()
-            groups_to_remove = n_per_group.loc[n_per_group < 200].index
-            samples_to_remove = group.isin(groups_to_remove)
-
-            features, label, group = (
-                features.loc[~samples_to_remove],
-                label.loc[~samples_to_remove],
-                group[~samples_to_remove],
-            )
-
-        train_test_idx, audit_idx = train_test_split(
-            np.arange(len(features)),
-            test_size=audit_pool_size,
-            random_state=random_state(auditset_seed),
-        )
-
-        # The model owner splits its data into train/test
-        train_idx, test_idx = train_test_split(
-            train_test_idx,
-            test_size=0.3,
-            random_state=random_state(traintest_seed),
-        )
-        audit_idx: np.ndarray
-        train_idx: np.ndarray
-        test_idx: np.ndarray
-
-    elif dataset == "celeba":
-        transformation = transforms.Compose([transforms.ToTensor()])
-        if "torch_model_architecture" in extra_args:
-            meanstd = extra_args.get("meanstd", None)
-            transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[
-                extra_args["torch_model_architecture"]
-            ]
-            transformation = transformation_factory(meanstd)
-        label_col = "Smiling"
-        group_col = "Male"
-
-        # Sample a subset of CelebA test split for the audit set
-        rng = np.random.default_rng(auditset_seed)
-        celeba = CelebADataset(
-            target_columns=[label_col, group_col],
-            transform=transformation,
-            split="test",
-        )
-        indices = rng.choice(len(celeba), size=audit_pool_size, replace=False)
-        celeba = torch.utils.data.Subset(celeba, indices=indices.tolist())
-
-        features, [label, group] = load_whole_dataset(celeba)
-        label = pd.Series(label)
-        group = pd.Series(group).astype(bool)
-
-        train_idx = np.array([])
-        test_idx = np.array([])
-        audit_idx = np.arange(audit_pool_size)
-    else:
-        raise NotImplementedError(f"The dataset {dataset} is not supported")
-
-    print(f"dataset size: {features.shape[0]}")
-
-    return features, label, group, train_idx, test_idx, audit_idx
-
-
-def build_skorch_model(model_params: dict[str, Any]) -> scotch.NeuralNetClassifier:
-    for required_attr in ["model_architecture", "num_classes"]:
-        if required_attr not in model_params:
-            raise ValueError(
-                f"The '{required_attr}' parameter is required for torch models"
-            )
-    if "model_architecture" not in model_params:
-        raise ValueError(
-            "The 'model_architecture' parameter is required for torch models"
-        )
-    if model_params["model_architecture"] not in MODEL_ARCHITECTURE_FACTORY:
-        raise ValueError("The specified architecture is not supported")
-    architecture_factory = MODEL_ARCHITECTURE_FACTORY[
-        model_params["model_architecture"]
-    ]
-    num_classes = model_params["num_classes"]
-    frozen_params = model_params.get("frozen_params", True)
-    skorch_wrapper = (
-        PretrainedFixedNetClassifier if frozen_params else scotch.NeuralNetClassifier
-    )
-    skorch_model = skorch_wrapper(
-        module=architecture_factory,
-        module__num_classes=num_classes,
-    )
-    return skorch_model
-
-
-def generate_model(
-    base_model_name: str,
-    model_name: ModelName,
-    model_params: dict[str, Any],
-    strategy: ManipulationStrategy,
-    strategy_params: dict[str, Any],
-    seed: np.random.SeedSequence,
-):
-    """Initialize the model that will be trained on the platform's data."""
-
-    match base_model_name:
-        case "skrub_default" | "skrub":
-            base_estimator = tabular_learner(
-                HistGradientBoostingClassifier(
-                    categorical_features="from_dtype",
-                    random_state=random_state(seed),
-                )
-            )
-            sample_weight_name = "histgradientboostingclassifier__sample_weight"
-
-        case "skrub_logistic":
-            base_estimator = tabular_learner(
-                LogisticRegression(random_state=random_state(seed))
-            )
-            sample_weight_name = "logisticregression__sample_weight"
-
-        case "torch":
-            base_estimator = build_skorch_model(model_params)
-
-        case _:
-            raise NotImplementedError(
-                f"The base base_model {base_model_name} is not supported"
-            )
-
-    manipulation_kwargs = {
-        "requires_sensitive_features": None,
-        "predict_requires_randomstate": False,
-        "fit_requires_randomstate": False,
-    }
-
-    match model_name:
-        case "unconstrained":
-            estimator = sk.clone(base_estimator)
-
-        case "exponentiated_gradient":
-            epsilon = model_params["epsilon"]
-            estimator = ExponentiatedGradient(
-                sk.clone(base_estimator),
-                DemographicParity(difference_bound=epsilon),
-                sample_weight_name=sample_weight_name,
-                eps=epsilon,
-            )
-            manipulation_kwargs["requires_sensitive_features"] = "fit"
-            manipulation_kwargs["predict_requires_randomstate"] = True
-
-        case "threshold_optimizer":
-            estimator = ThresholdOptimizer(
-                estimator=sk.clone(base_estimator), constraints="demographic_parity"
-            )
-            manipulation_kwargs["requires_sensitive_features"] = "both"
-            manipulation_kwargs["predict_requires_randomstate"] = True
-
-        case _:
-            raise NotImplementedError(f"The model {model_name} is not supported")
-
-    match strategy:
-        case "honest":
-            model = HonestClassifier(estimator, **manipulation_kwargs)
-
-        case "randomized_response":
-            epsilon = strategy_params["epsilon"]
-            model = RandomizedResponse(estimator, epsilon, **manipulation_kwargs)
-
-        case "ROC_mitigation":
-            theta = strategy_params["theta"]
-            model = ROCMitigation(estimator, theta, **manipulation_kwargs)
-
-        case "model_swap":
-            if base_model_name == "torch":
-                prefit = True
-            else:
-                prefit = False
-
-            model = ModelSwap(estimator, prefit=prefit, **manipulation_kwargs)
-
-        case "threshold_manipulation":
-            model = ThresholdManipulation(estimator, **manipulation_kwargs)
-
-        case "always_yes":
-            model = AlwaysYes(estimator, **manipulation_kwargs)
-
-        case "always_no":
-            model = AlwaysNo(estimator, **manipulation_kwargs)
-
-        case "linear_relaxation":
-            tolerated_unfairness = strategy_params["tolerated_unfairness"]
-            model = LinearRelaxation(
-                estimator, tolerated_unfairness, **manipulation_kwargs
-            )
-
-        case "label_transport":
-            tolerated_unfairness = strategy_params["tolerated_unfairness"]
-            model = LabelTransport(
-                estimator, tolerated_unfairness, **manipulation_kwargs
-            )
-
-        case _:
-            raise NotImplementedError(
-                f"The manipulation strategy {strategy} is not supported"
-            )
-
-    # If the base model is a torch model, fetch the pretrained weights.
-    #
-    # FIXME: for now, this only supports torch models if there it is wrapped
-    # only once (e.g. just a manupulation or just a fair training approach).
-    # This does not spport combinations of both.
-    if base_model_name == "torch":
-        skorch_wrapper = model.estimator
-        assert isinstance(skorch_wrapper, PretrainedFixedNetClassifier)
-
-        frozen_params = model_params.get("frozen_params", True)
-        if "weight_path" in model_params or frozen_params:
-            skorch_wrapper.initialize()
-        if "weight_path" in model_params:
-            state_dict = torch.load(model_params["weight_path"], weights_only=True)
-            skorch_wrapper.module_.load_state_dict(state_dict)
-    return model
-
-
-def detection_oracle(tpr: float, tnr: float):
-    return AuditDetector(tpr, tnr)
-
-
-def compute_metrics(
-    X_queries: pd.DataFrame,
-    y_queries: pd.Series,
-    A_queries: pd.Series,
-    y_pred: np.ndarray,
-    y_pred_no_manipulation: np.ndarray,
-    true_audit_queries_mask: np.ndarray,
-) -> dict[str, float | list[float]]:
-    """Compute different metrics related to the performance and fairness of the
-    model."""
-
-    metrics = {}
-    groups = A_queries.unique()
-    groups.sort()
-
-    ############################################################################
-    # SYSTEM (UNDER MANIPULATION) AS SEEN BY THE AUDITOR                       #
-    ############################################################################
-    # The utility as measured by the auditor
-    metrics["utility_audit"] = accuracy_score(
-        y_queries[true_audit_queries_mask], y_pred[true_audit_queries_mask]
-    )
-
-    # The per group conditional accuracy as seen by the auditor
-    metrics["conditional_accuracy_audit"] = [
-        accuracy_score(
-            y_queries[true_audit_queries_mask],
-            y_pred[true_audit_queries_mask],
-            sample_weight=A_queries[true_audit_queries_mask] == group,
-        )
-        for group in groups
-    ]
-
-    # The performance parity (a.k.a. FRAUD-detect) as seen by the auditor
-    metrics["performance_parity_audit"] = float(
-        performance_parity(
-            y_queries[true_audit_queries_mask].to_numpy(),
-            y_pred[true_audit_queries_mask],
-            A_queries[true_audit_queries_mask].to_numpy(),
-        )
-    )
-
-    # The demographic parity as seen by the auditor
-    metrics["demographic_parity_audit"] = float(
-        demographic_parity(
-            y_queries[true_audit_queries_mask].to_numpy(),
-            y_pred[true_audit_queries_mask],
-            A_queries[true_audit_queries_mask].to_numpy(),
-            mode="difference",
-        )
-    )
-
-    # The demographic parity as seen by the auditor
-    metrics["absolute_demographic_parity_audit"] = float(
-        demographic_parity(
-            y_queries[true_audit_queries_mask].to_numpy(),
-            y_pred[true_audit_queries_mask],
-            A_queries[true_audit_queries_mask].to_numpy(),
-            mode="absolute_difference",
-        )
-    )
-
-    ############################################################################
-    # SYSTEM (NO MANIPULATION) AS SEEN BY THE AUDITOR                       #
-    ############################################################################
-    # The demographic parity with no manipulation
-    metrics["demographic_parity_audit_honest"] = demographic_parity(
-        y_queries[true_audit_queries_mask].to_numpy(),
-        y_pred_no_manipulation[true_audit_queries_mask],
-        A_queries[true_audit_queries_mask].to_numpy(),
-        mode="difference",
-    )
-
-    # The performance parity (a.k.a. FRAUD-detect) as seen by the auditor
-    metrics["performance_parity_audit_honest"] = float(
-        performance_parity(
-            y_queries[true_audit_queries_mask].to_numpy(),
-            y_pred_no_manipulation[true_audit_queries_mask],
-            A_queries[true_audit_queries_mask].to_numpy(),
-        )
-    )
-
-    # The absoulute demographic parity with no manipulation
-    metrics["absolute_demographic_parity_audit_honest"] = demographic_parity(
-        y_queries[true_audit_queries_mask].to_numpy(),
-        y_pred_no_manipulation[true_audit_queries_mask],
-        A_queries[true_audit_queries_mask].to_numpy(),
-        mode="absolute_difference",
-    )
-
-    # The disagreement between orignal model and manipulations
-    metrics["manipulation_hamming"] = np.mean(
-        y_pred[true_audit_queries_mask]
-        != y_pred_no_manipulation[true_audit_queries_mask]
-    )
-
-    ############################################################################
-    # SYSTEM AS SEEN BY THE USERS                                              #
-    ############################################################################
-    # NOTE: The utility as seen by the users is disabled because it is never
-    # used in the experiments for now.
-    #
-    # # The utility (for now, the accuracy) as seen by the users
-    # metrics["utility_user"] = accuracy_score(
-    #     y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
-    # )
-
-    # # The per group conditional accuracy as seen by the users
-    # metrics["conditional_accuracy_user"] = [
-    #     accuracy_score(
-    #         y_queries[~true_audit_queries_mask],
-    #         y_pred[~true_audit_queries_mask],
-    #         sample_weight=A_queries[~true_audit_queries_mask] == group,
-    #     )
-    #     for group in groups
-    # ]
-
-    # # The demographic parity as seen by the users
-    # metrics["demographic_parity_user"] = float(
-    #     demographic_parity(
-    #         y_queries[~true_audit_queries_mask].to_numpy(),
-    #         y_pred[~true_audit_queries_mask],
-    #         A_queries[~true_audit_queries_mask].to_numpy(),
-    #         mode="difference",
-    #     )
-    # )
-    # # The absolute demographic parity as seen by the users
-    # metrics["absolute_demographic_parity_user"] = float(
-    #     demographic_parity(
-    #         y_queries[~true_audit_queries_mask].to_numpy(),
-    #         y_pred[~true_audit_queries_mask],
-    #         A_queries[~true_audit_queries_mask].to_numpy(),
-    #         mode="absolute_difference",
-    #     )
-    # )
-
-    return metrics
 
 
 def run_audit(
@@ -1141,9 +672,9 @@ def manipulation_stealthiness(run: bool = False):
 
     base_models = {
         "ACSEmployment_binarized": {"skrub", "skrub_logistic"},
-        # "celeba": {
-        #     "torch",
-        # }
+        "celeba": {
+            "torch",
+        },
     }
 
     model_params = {
@@ -1367,6 +898,22 @@ def manipulation_stealthiness(run: bool = False):
     )
     # fig.update_xaxes(matches=None)
     fig.update_traces(marker_size=20)
+    fig.show()
+
+    fig = px.scatter(
+        records,
+        x="performance_parity_audit",
+        y="hidden_demographic_parity",
+        color="strategy",
+        category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
+        facet_col="dataset",
+        symbol="base_model_name",
+        error_x="auditset_hamming_std",
+        error_y="hidden_demographic_parity_std",
+        hover_data=["strategy_params"],
+    )
+    fig.update_traces(marker_size=20)
+    # fig.update_xaxes(matches=None)
     fig.show()
 
 
