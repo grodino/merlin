@@ -82,7 +82,7 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
             optimizer.step()
 
             step += 1
-            if step % 100 == 0:
+            if step % 200 == 0:
                 val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
                 if val_acc > best_acc:
                     best_acc = val_acc
@@ -113,7 +113,7 @@ def optimal_device() -> torch.device:
         return torch.device("cpu")
 
 
-def load_dataset():
+def load_dataset(model_name: str):
     transformation = transforms.Compose([transforms.ToTensor()])
 
     meanstd = None
@@ -141,28 +141,30 @@ def load_dataset():
 
 @app.command()
 def lenet():
-    train_loader, validation_loader = load_dataset()
+    model_name = "lenet"
+    train_loader, validation_loader = load_dataset(model_name)
 
     device = optimal_device()
-    architecture_factory = MODEL_ARCHITECTURE_FACTORY["lenet"]
+    architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
     model = architecture_factory(num_classes=2)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.CrossEntropyLoss()
-    train_model("lenet", model, optimizer, criterion, train_loader, validation_loader, device)
+    train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
 
 
 @app.command()
 def resnet():
-    train_loader, validation_loader = load_dataset()
+    model_name = "resnet18"
+    train_loader, validation_loader = load_dataset(model_name)
 
     device = optimal_device()
-    architecture_factory = MODEL_ARCHITECTURE_FACTORY["resnet18"]
+    architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
     model = architecture_factory(num_classes=2)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.CrossEntropyLoss()
-    train_model("resnet18", model, optimizer, criterion, train_loader, validation_loader, device)
+    train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
 
 
 if __name__ == "__main__":
