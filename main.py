@@ -1111,9 +1111,6 @@ def manipulation_stealthiness(run: bool = False):
     """Plot how much the un-fairness was lowered against how many points were
     changed"""
 
-    dataset = "ACSEmployment_binarized"
-    # base_model = "skrub_logistic"
-    base_model = "skrub"
     audit_budget = 1_000
     # n_repetitions = 15
     n_repetitions = 5
@@ -1121,7 +1118,9 @@ def manipulation_stealthiness(run: bool = False):
     entropy = 12345678
     tnr = 1.0
     tpr = 1.0
-    output = Path(f"generated/stealthiness{n_repetitions}_{dataset}_{base_model}.jsonl")
+    output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
+
+    base_models = {"ACSEmployment_binarized": {"skrub", "skrub_logistic"}}
 
     if run:
         output.unlink(missing_ok=True)
@@ -1137,46 +1136,17 @@ def manipulation_stealthiness(run: bool = False):
             # "audit_set": seed.spawn(1)[0],
         }
 
-        for seed in np.random.SeedSequence(entropy).spawn(n_repetitions):
-            print("honest unconstrained")
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="honest",
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budgets=audit_budget,
-                audit_pool_size=10_000,
-                entropy=int(random_state(seed)),
-                override_seeds=override_seeds,
-                output=output,
-            )
-
-            print("model swap")
-            run_audit(
-                dataset=dataset,
-                base_model_name=base_model,
-                model_name="unconstrained",
-                strategy="model_swap",
-                detection_tpr=tpr,
-                detection_tnr=tnr,
-                audit_budgets=audit_budget,
-                audit_pool_size=10_000,
-                entropy=int(random_state(seed)),
-                override_seeds=override_seeds,
-                output=output,
-            )
-
-            print("linear relaxation", end=" ", flush=True)
-            for tolerated_unfairness in [0.0] + np.logspace(-3, -1, num=10).tolist():
-                print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+        for dataset, dataset_base_models in base_models.items():
+            for base_model, seed in product(
+                dataset_base_models,
+                np.random.SeedSequence(entropy).spawn(n_repetitions),
+            ):
+                print("honest unconstrained")
                 run_audit(
                     dataset=dataset,
                     base_model_name=base_model,
                     model_name="unconstrained",
-                    strategy="linear_relaxation",
-                    strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                    strategy="honest",
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
@@ -1185,17 +1155,13 @@ def manipulation_stealthiness(run: bool = False):
                     override_seeds=override_seeds,
                     output=output,
                 )
-            print()
 
-            print("score transport", end=" ", flush=True)
-            for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
-                print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+                print("model swap")
                 run_audit(
                     dataset=dataset,
                     base_model_name=base_model,
                     model_name="unconstrained",
-                    strategy="label_transport",
-                    strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                    strategy="model_swap",
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
@@ -1204,26 +1170,65 @@ def manipulation_stealthiness(run: bool = False):
                     override_seeds=override_seeds,
                     output=output,
                 )
-            print()
 
-            print("manipulation ROC", end=" ", flush=True)
-            for theta in np.linspace(0.5, 0.6, num=10):
-                print(f"{theta:.2f}", end=" ", flush=True)
-                run_audit(
-                    dataset=dataset,
-                    base_model_name=base_model,
-                    model_name="unconstrained",
-                    strategy="ROC_mitigation",
-                    strategy_params={"theta": theta},  # type: ignore
-                    detection_tpr=tpr,
-                    detection_tnr=tnr,
-                    audit_budgets=audit_budget,
-                    audit_pool_size=10_000,
-                    entropy=int(random_state(seed)),
-                    override_seeds=override_seeds,
-                    output=output,
-                )
-            print()
+                print("linear relaxation", end=" ", flush=True)
+                for tolerated_unfairness in [0.0] + np.logspace(
+                    -3, -1, num=10
+                ).tolist():
+                    print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+                    run_audit(
+                        dataset=dataset,
+                        base_model_name=base_model,
+                        model_name="unconstrained",
+                        strategy="linear_relaxation",
+                        strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                        detection_tpr=tpr,
+                        detection_tnr=tnr,
+                        audit_budgets=audit_budget,
+                        audit_pool_size=10_000,
+                        entropy=int(random_state(seed)),
+                        override_seeds=override_seeds,
+                        output=output,
+                    )
+                print()
+
+                print("score transport", end=" ", flush=True)
+                for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
+                    print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
+                    run_audit(
+                        dataset=dataset,
+                        base_model_name=base_model,
+                        model_name="unconstrained",
+                        strategy="label_transport",
+                        strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
+                        detection_tpr=tpr,
+                        detection_tnr=tnr,
+                        audit_budgets=audit_budget,
+                        audit_pool_size=10_000,
+                        entropy=int(random_state(seed)),
+                        override_seeds=override_seeds,
+                        output=output,
+                    )
+                print()
+
+                print("manipulation ROC", end=" ", flush=True)
+                for theta in np.linspace(0.5, 0.6, num=10):
+                    print(f"{theta:.2f}", end=" ", flush=True)
+                    run_audit(
+                        dataset=dataset,
+                        base_model_name=base_model,
+                        model_name="unconstrained",
+                        strategy="ROC_mitigation",
+                        strategy_params={"theta": theta},  # type: ignore
+                        detection_tpr=tpr,
+                        detection_tnr=tnr,
+                        audit_budgets=audit_budget,
+                        audit_pool_size=10_000,
+                        entropy=int(random_state(seed)),
+                        override_seeds=override_seeds,
+                        output=output,
+                    )
+                print()
 
     params = [
         "dataset",
@@ -1233,10 +1238,20 @@ def manipulation_stealthiness(run: bool = False):
         "strategy",
         "strategy_params",
         "audit_budget",
-        "detection_tpr",
-        "detection_tnr",
+        # "detection_tpr",
+        # "detection_tnr",
         # "entropy",
     ]
+
+    model_perfs = (
+        pl.read_ndjson(output)
+        .select("train_accuracy", "entropy", *params)
+        .filter(pl.col("train_accuracy").is_not_null())
+        .sort("base_model_name")
+    )
+    print(model_perfs)
+    # return
+
     records = (
         pl.read_ndjson(output)
         # For now, all model params are None so we can drop them
@@ -1270,9 +1285,6 @@ def manipulation_stealthiness(run: bool = False):
             pl.col("strategy_params").struct.json_encode(),
         ).sort("strategy")
     )
-
-    # TODO: detection idea. Are the labels differences mostly done in the way
-    # that optimizes the observed demographic parity?
 
     fig = px.scatter(
         records,
