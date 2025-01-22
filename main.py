@@ -1120,7 +1120,19 @@ def manipulation_stealthiness(run: bool = False):
     tpr = 1.0
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
-    base_models = {"ACSEmployment_binarized": {"skrub", "skrub_logistic"}}
+    base_models = {
+        # "ACSEmployment_binarized": {
+        #     "skrub", "skrub_logistic"
+        # },
+        "celeba": {
+            "torch",
+        }
+    }
+
+    model_params = {
+        "ACSEmployment_binarized": "",
+        "celeba": "model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth"
+    }
 
     if run:
         output.unlink(missing_ok=True)
@@ -1137,6 +1149,7 @@ def manipulation_stealthiness(run: bool = False):
         }
 
         for dataset, dataset_base_models in base_models.items():
+            print("Running experiments with dataset: ", dataset)
             for base_model, seed in product(
                 dataset_base_models,
                 np.random.SeedSequence(entropy).spawn(n_repetitions),
@@ -1146,6 +1159,7 @@ def manipulation_stealthiness(run: bool = False):
                     dataset=dataset,
                     base_model_name=base_model,
                     model_name="unconstrained",
+                    model_params=model_params[dataset],
                     strategy="honest",
                     detection_tpr=tpr,
                     detection_tnr=tnr,
