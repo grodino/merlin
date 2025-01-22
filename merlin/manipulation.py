@@ -9,7 +9,7 @@ from fairlearn.postprocessing import ThresholdOptimizer
 from scipy import sparse
 from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin
 
-from merlin.utils import subsample_mask
+from merlin.utils import get_subset, subsample_mask
 
 
 class ManipulatedClassifier(ABC, BaseEstimator, MetaEstimatorMixin, ClassifierMixin):
@@ -328,6 +328,33 @@ class ModelSwap(ManipulatedClassifier):
                     sensitive_features=sensitive_features.loc[audit_queries_mask],
                     random_state=random_state,
                 )
+
+        return y_pred
+
+
+class ThresholdManipulation(ManipulatedClassifier):
+    """Use a thresholding post-hoc fairness mitigation on the audit set"""
+
+    def predict(self, X, sensitive_features, audit_queries_mask, random_state=None):
+        # Output of the real model
+        y_pred_proba = self._predict_proba(X, sensitive_features, random_state)
+
+        # Get the labels from the probabilities
+        y_pred = y_pred_proba.argmax(axis=1)
+
+        if np.sum(audit_queries_mask) > 0:
+            X_audit = get_subset(X, audit_queries_mask)
+            y_audit = get_subset(y_pred, audit_queries_mask)
+            A_audit = get_subset(sensitive_features, audit_queries_mask)
+
+            optimizer = ThresholdOptimizer(
+                estimator=self.estimator, constraints="demographic_parity", prefit=True
+            ).fit(X_audit, y_audit, sensitive_features=A_audit)
+            y_pred[audit_queries_mask] = optimizer.predict(
+                X_audit,
+                sensitive_features=A_audit,
+                random_state=random_state,
+            )
 
         return y_pred
 

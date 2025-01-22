@@ -29,7 +29,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from skrub import tabular_learner
 
-from merlin.audit import audit_set, demographic_parity
+from merlin.audit import audit_set, demographic_parity, performance_parity
 from merlin.detection import AuditDetector
 from merlin.manipulation import (
     AlwaysNo,
@@ -40,9 +40,10 @@ from merlin.manipulation import (
     RandomizedResponse,
     ROCMitigation,
     LabelTransport,
+    ThresholdManipulation,
     subsample_mask,
 )
-from merlin.utils import extract_params, random_state
+from merlin.utils import extract_params, get_subset, random_state
 
 import skorch as scotch
 from torchvision import transforms
@@ -59,20 +60,6 @@ from merlin.helpers.transform import make_transformation
 from merlin.datasets import CelebADataset
 
 from merlin.helpers.dataset import load_whole_dataset
-
-
-def get_subset(data, subset):
-    if isinstance(data, pd.DataFrame) or isinstance(data, pd.Series):
-        # Use .loc[] for Pandas
-        return data.loc[subset]
-    elif isinstance(data, np.ndarray) or isinstance(data, torch.Tensor):
-        # Use NumPy-style indexing for arrays
-        return data[subset]
-    else:
-        raise TypeError(
-            "Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy/torch array."
-        )
-
 
 app = typer.Typer()
 ModelName = Annotated[str, "The name of the estimator trained by the platform"]
@@ -330,6 +317,9 @@ def generate_model(
 
             model = ModelSwap(estimator, prefit=prefit, **manipulation_kwargs)
 
+        case "threshold_manipulation":
+            model = ThresholdManipulation(estimator, **manipulation_kwargs)
+
         case "always_yes":
             model = AlwaysYes(estimator, **manipulation_kwargs)
 
@@ -398,7 +388,7 @@ def compute_metrics(
         y_queries[true_audit_queries_mask], y_pred[true_audit_queries_mask]
     )
 
-    # The per group conditional accuracy as seen by the users
+    # The per group conditional accuracy as seen by the auditor
     metrics["conditional_accuracy_audit"] = [
         accuracy_score(
             y_queries[true_audit_queries_mask],
@@ -407,6 +397,15 @@ def compute_metrics(
         )
         for group in groups
     ]
+
+    # The performance parity (a.k.a. FRAUD-detect) as seen by the auditor
+    metrics["performance_parity_audit"] = float(
+        performance_parity(
+            y_queries[true_audit_queries_mask].to_numpy(),
+            y_pred[true_audit_queries_mask],
+            A_queries[true_audit_queries_mask].to_numpy(),
+        )
+    )
 
     # The demographic parity as seen by the auditor
     metrics["demographic_parity_audit"] = float(
@@ -438,6 +437,16 @@ def compute_metrics(
         A_queries[true_audit_queries_mask].to_numpy(),
         mode="difference",
     )
+
+    # The performance parity (a.k.a. FRAUD-detect) as seen by the auditor
+    metrics["performance_parity_audit_honest"] = float(
+        performance_parity(
+            y_queries[true_audit_queries_mask].to_numpy(),
+            y_pred_no_manipulation[true_audit_queries_mask],
+            A_queries[true_audit_queries_mask].to_numpy(),
+        )
+    )
+
     # The absoulute demographic parity with no manipulation
     metrics["absolute_demographic_parity_audit_honest"] = demographic_parity(
         y_queries[true_audit_queries_mask].to_numpy(),
@@ -1131,12 +1140,10 @@ def manipulation_stealthiness(run: bool = False):
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
     base_models = {
-        # "ACSEmployment_binarized": {
-        #     "skrub", "skrub_logistic"
-        # },
-        "celeba": {
-            "torch",
-        }
+        "ACSEmployment_binarized": {"skrub", "skrub_logistic"},
+        # "celeba": {
+        #     "torch",
+        # }
     }
 
     model_params = {
@@ -1195,6 +1202,22 @@ def manipulation_stealthiness(run: bool = False):
                 #     override_seeds=override_seeds,
                 #     output=output,
                 # )
+
+                print("threshold manipulation")
+                run_audit(
+                    dataset=dataset,
+                    base_model_name=base_model,
+                    model_params=model_params[dataset],
+                    model_name="unconstrained",
+                    strategy="threshold_manipulation",
+                    detection_tpr=tpr,
+                    detection_tnr=tnr,
+                    audit_budgets=audit_budget,
+                    audit_pool_size=10_000,
+                    entropy=int(random_state(seed)),
+                    override_seeds=override_seeds,
+                    output=output,
+                )
 
                 print("linear relaxation", end=" ", flush=True)
                 for tolerated_unfairness in [0.0] + np.logspace(
@@ -1320,11 +1343,14 @@ def manipulation_stealthiness(run: bool = False):
         y="hidden_demographic_parity",
         color="strategy",
         category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
+        facet_col="dataset",
+        symbol="base_model_name",
         error_x="auditset_hamming_std",
         error_y="hidden_demographic_parity_std",
         hover_data=["strategy_params"],
     )
     fig.update_traces(marker_size=20)
+    # fig.update_xaxes(matches=None)
     fig.show()
 
     fig = px.scatter(
@@ -1332,11 +1358,14 @@ def manipulation_stealthiness(run: bool = False):
         x="manipulation_hamming",
         y="hidden_demographic_parity",
         color="strategy",
+        symbol="base_model_name",
         category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
+        facet_col="dataset",
         error_x="manipulation_hamming_std",
         error_y="hidden_demographic_parity_std",
         hover_data=["strategy_params"],
     )
+    # fig.update_xaxes(matches=None)
     fig.update_traces(marker_size=20)
     fig.show()
 
@@ -1369,7 +1398,7 @@ def lenet():
         model_name="unconstrained",
         model_params="model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth",
         # strategy="honest",
-        strategy="model_swap",
+        strategy="threshold_manipulation",
         # strategy_params="tolerated_unfairness=0.1",
         # strategy_params="theta=0.55",
         # strategy_params="epsilon=0.1",

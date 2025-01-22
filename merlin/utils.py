@@ -3,6 +3,8 @@ from typing import Any
 import numpy as np
 from numpy.random import SeedSequence
 from numpy.typing import ArrayLike
+import pandas as pd
+import torch
 
 from merlin.helpers import ParameterParser
 
@@ -65,3 +67,16 @@ def subsample_mask(
     mask[remove] = False
 
     return mask
+
+
+def get_subset(data, subset):
+    if isinstance(data, pd.DataFrame) or isinstance(data, pd.Series):
+        # Use .loc[] for Pandas
+        return data.loc[subset]
+    elif isinstance(data, np.ndarray) or isinstance(data, torch.Tensor):
+        # Use NumPy-style indexing for arrays
+        return data[subset]
+    else:
+        raise TypeError(
+            "Unsupported type for 'features'. Must be Pandas DataFrame/Series or NumPy/torch array."
+        )
