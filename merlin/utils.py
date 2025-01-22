@@ -7,13 +7,16 @@ from numpy.typing import ArrayLike
 from merlin.helpers import ParameterParser
 
 
-def random_state(seed: np.random.SeedSequence) -> np.int32:
+def random_state(seed: np.random.SeedSequence | None) -> np.int32:
     """Generates a random u32 from the given seed
 
     Required to adapt the new numpy rng system to the int-based system of
     sklearn.
     NOTE: Two calls with the same seed will return the same value.
     """
+    if seed is None:
+        seed = SeedSequence()
+
     return seed.generate_state(1)[0]
 
 

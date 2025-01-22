@@ -8,6 +8,7 @@ from time import perf_counter
 
 import folktables
 import numpy as np
+from numpy.random import SeedSequence
 import pandas as pd
 import polars as pl
 import sklearn as sk
@@ -85,7 +86,14 @@ Dataset = Annotated[
 
 
 @cache
-def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
+def get_data(
+    dataset: Dataset,
+    audit_pool_size: int,
+    binarize_group: bool = False,
+    traintest_seed: SeedSequence | None = None,
+    auditset_seed: SeedSequence | None = None,
+    **extra_args,
+):
     if dataset == "ACSEmployment":
         data_source = ACSDataSource(
             survey_year="2018", horizon="1-Year", survey="person"
@@ -93,6 +101,20 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
         # group_col = "AGEP"
         group_col = "RAC1P"
 
+        # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
+        # RAC1P Character 1
+        # Recoded detailed race code
+        # 1 .White alone
+        # 2 .Black or African American alone
+        # 3 .American Indian alone
+        # 4 .Alaska Native alone
+        # 5 .American Indian and Alaska Native tribes specified; or
+        #   .American Indian or Alaska Native, not specified and no other
+        #   .races
+        # 6 .Asian alone
+        # 7 .Native Hawaiian and Other Pacific Islander alone
+        # 8 .Some Other Race alone
+        # 9 .Two or More Races²
         ACSEmployment = folktables.BasicProblem(
             features=[
                 "AGEP",
@@ -119,19 +141,6 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
             # postprocess=lambda x: np.nan_to_num(x, -1),
         )
 
-        # if binarize_group:
-        #     acs_data = data_source.get_data(states=["MN"], download=True)
-        #     features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-        #     label: pd.Series = labeldf["ESR"].astype(int)
-        #     group: pd.Series = groupdf[group_col].astype(int)
-        #     group.loc[groupdf[group_col] < 45] = 0
-        #     group.loc[45 <= groupdf[group_col]] = 1
-        #     group = group.astype(bool)
-
-        # else:
-        #     raise NotImplementedError("Only support binary groups for now")
-
         if binarize_group:
             acs_data = data_source.get_data(states=["MN"], download=True)
             features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
@@ -156,6 +165,23 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
                 label.loc[~samples_to_remove],
                 group[~samples_to_remove],
             )
+
+        train_test_idx, audit_idx = train_test_split(
+            np.arange(len(features)),
+            test_size=audit_pool_size,
+            random_state=random_state(auditset_seed),
+        )
+
+        # The model owner splits its data into train/test
+        train_idx, test_idx = train_test_split(
+            train_test_idx,
+            test_size=0.3,
+            random_state=random_state(traintest_seed),
+        )
+        audit_idx: np.ndarray
+        train_idx: np.ndarray
+        test_idx: np.ndarray
+
     elif dataset == "celeba":
         transformation = transforms.Compose([transforms.ToTensor()])
         if "torch_model_architecture" in extra_args:
@@ -166,39 +192,30 @@ def get_data(dataset: Dataset, binarize_group: bool = False, **extra_args):
             transformation = transformation_factory(meanstd)
         label_col = "Smiling"
         group_col = "Male"
-        celeba = torch.utils.data.Subset(
-            CelebADataset(
-                target_columns=[label_col, group_col],
-                transform=transformation,
-                split="test",
-            ),
-            indices=range(1000),
+
+        # Sample a subset of CelebA test split for the audit set
+        rng = np.random.default_rng(auditset_seed)
+        celeba = CelebADataset(
+            target_columns=[label_col, group_col],
+            transform=transformation,
+            split="test",
         )
+        indices = rng.choice(len(celeba), size=audit_pool_size, replace=False)
+        celeba = torch.utils.data.Subset(celeba, indices=indices.tolist())
 
         features, [label, group] = load_whole_dataset(celeba)
         label = pd.Series(label)
         group = pd.Series(group).astype(bool)
+
+        train_idx = np.array([])
+        test_idx = np.array([])
+        audit_idx = np.arange(audit_pool_size)
     else:
         raise NotImplementedError(f"The dataset {dataset} is not supported")
 
-    # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
-    # RAC1P Character 1
-    # Recoded detailed race code
-    # 1 .White alone
-    # 2 .Black or African American alone
-    # 3 .American Indian alone
-    # 4 .Alaska Native alone
-    # 5 .American Indian and Alaska Native tribes specified; or
-    #   .American Indian or Alaska Native, not specified and no other
-    #   .races
-    # 6 .Asian alone
-    # 7 .Native Hawaiian and Other Pacific Islander alone
-    # 8 .Some Other Race alone
-    # 9 .Two or More Races²
-
     print(f"dataset size: {features.shape[0]}")
 
-    return features, label, group
+    return features, label, group, train_idx, test_idx, audit_idx
 
 
 def build_skorch_model(model_params: dict[str, Any]) -> scotch.NeuralNetClassifier:
@@ -438,39 +455,42 @@ def compute_metrics(
     ############################################################################
     # SYSTEM AS SEEN BY THE USERS                                              #
     ############################################################################
-    # The utility (for now, the accuracy) as seen by the users
-    metrics["utility_user"] = accuracy_score(
-        y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
-    )
+    # NOTE: The utility as seen by the users is disabled because it is never
+    # used in the experiments for now.
+    #
+    # # The utility (for now, the accuracy) as seen by the users
+    # metrics["utility_user"] = accuracy_score(
+    #     y_queries[~true_audit_queries_mask], y_pred[~true_audit_queries_mask]
+    # )
 
-    # The per group conditional accuracy as seen by the users
-    metrics["conditional_accuracy_user"] = [
-        accuracy_score(
-            y_queries[~true_audit_queries_mask],
-            y_pred[~true_audit_queries_mask],
-            sample_weight=A_queries[~true_audit_queries_mask] == group,
-        )
-        for group in groups
-    ]
+    # # The per group conditional accuracy as seen by the users
+    # metrics["conditional_accuracy_user"] = [
+    #     accuracy_score(
+    #         y_queries[~true_audit_queries_mask],
+    #         y_pred[~true_audit_queries_mask],
+    #         sample_weight=A_queries[~true_audit_queries_mask] == group,
+    #     )
+    #     for group in groups
+    # ]
 
-    # The demographic parity as seen by the users
-    metrics["demographic_parity_user"] = float(
-        demographic_parity(
-            y_queries[~true_audit_queries_mask].to_numpy(),
-            y_pred[~true_audit_queries_mask],
-            A_queries[~true_audit_queries_mask].to_numpy(),
-            mode="difference",
-        )
-    )
-    # The absolute demographic parity as seen by the users
-    metrics["absolute_demographic_parity_user"] = float(
-        demographic_parity(
-            y_queries[~true_audit_queries_mask].to_numpy(),
-            y_pred[~true_audit_queries_mask],
-            A_queries[~true_audit_queries_mask].to_numpy(),
-            mode="absolute_difference",
-        )
-    )
+    # # The demographic parity as seen by the users
+    # metrics["demographic_parity_user"] = float(
+    #     demographic_parity(
+    #         y_queries[~true_audit_queries_mask].to_numpy(),
+    #         y_pred[~true_audit_queries_mask],
+    #         A_queries[~true_audit_queries_mask].to_numpy(),
+    #         mode="difference",
+    #     )
+    # )
+    # # The absolute demographic parity as seen by the users
+    # metrics["absolute_demographic_parity_user"] = float(
+    #     demographic_parity(
+    #         y_queries[~true_audit_queries_mask].to_numpy(),
+    #         y_pred[~true_audit_queries_mask],
+    #         A_queries[~true_audit_queries_mask].to_numpy(),
+    #         mode="absolute_difference",
+    #     )
+    # )
 
     return metrics
 
@@ -545,22 +565,8 @@ def run_audit(
             "torch_model_architecture": model_params_dict["model_architecture"],
         }
 
-    features, label, group = get_data(dataset, binarize, **extra_args)
-
-    # The auditor has access to the same distribution as the model owner but
-    # they do not have the exact same points.
-    #
-    # NOTE: to make sure that the audit data distribution really represents "the
-    # real data", we do not stratify the splits sampling.
-    train_test_idx, audit_idx = train_test_split(
-        np.arange(len(features)),
-        test_size=audit_pool_size,
-        random_state=random_state(seeds["data_split"]),
-    )
-
-    # The model owner splits its data into train/test
-    train_idx, test_idx = train_test_split(
-        train_test_idx, test_size=0.3, random_state=random_state(seeds["train_test"])
+    features, label, group, train_idx, test_idx, audit_idx = get_data(
+        dataset, audit_pool_size, binarize, **extra_args
     )
 
     # Simulate a bias against one particular subgroup in the training data by
@@ -585,12 +591,12 @@ def run_audit(
     y_test = label.loc[test_idx]
     A_test = group.loc[test_idx]
 
-    assert (
-        A_train.nunique() == group.nunique()
-    ), "There are groups that are not represented in the train data"
-    assert (
-        group.loc[test_idx].nunique() == group.nunique()
-    ), "There are groups that are not represented in the test data."
+    assert (A_train.nunique() == group.nunique()) or len(
+        train_idx
+    ) == 0, "There are groups that are not represented in the train data"
+    assert (group.loc[test_idx].nunique() == group.nunique()) or len(
+        test_idx
+    ) == 0, "There are groups that are not represented in the test data."
     # assert (
     #     len(features)
     #     == np.unique(np.concatenate([train_idx, test_idx, audit_idx])).shape[0]
@@ -614,26 +620,31 @@ def run_audit(
     fit_time = perf_counter() - fit_time
 
     # Evaluate the perfs on train and test set (when not manipulated)
-    training_perfs = {
-        "train_accuracy": np.mean(
-            model.predict(
-                X_train,
-                A_train,
-                audit_queries_mask=np.zeros_like(y_train, dtype=bool),
-                random_state=random_state(seeds["model"]),
-            )
-            == y_train
-        ),
-        "test_accuracy": np.mean(
-            model.predict(
-                X_test,
-                A_test,
-                audit_queries_mask=np.zeros_like(y_test, dtype=bool),
-                random_state=random_state(seeds["model"]),
-            )
-            == y_test
-        ),
-    }
+    if base_model_name != "torch":
+        training_perfs = {
+            "train_accuracy": np.mean(
+                model.predict(
+                    X_train,
+                    A_train,
+                    audit_queries_mask=np.zeros_like(y_train, dtype=bool),
+                    random_state=random_state(seeds["model"]),
+                )
+                == y_train
+            ),
+            "test_accuracy": np.mean(
+                model.predict(
+                    X_test,
+                    A_test,
+                    audit_queries_mask=np.zeros_like(y_test, dtype=bool),
+                    random_state=random_state(seeds["model"]),
+                )
+                == y_test
+            ),
+        }
+    else:
+        # TODO: save the train/test accuracies during celebA training and load
+        # it back here
+        training_perfs = {"train_accuracy": None, "test_accuracy": None}
 
     ############################################################################
     # GENERATE THE AUDIT DETECTION ORACLE                                      #
@@ -722,6 +733,7 @@ def run_audit(
             strategy=strategy,
             strategy_params=strategy_params_dict,
             audit_budget=audit_budget,
+            audit_pool_size=audit_pool_size,
             detection_tpr=detection_tpr,
             detection_tnr=detection_tnr,
             entropy=entropy,
@@ -893,7 +905,6 @@ def estimation_variance(run: bool = False):
     values = [
         "demographic_parity_audit",
         "demographic_parity_audit_honest",
-        "demographic_parity_user",
         "entropy",
     ]
 
@@ -1038,7 +1049,6 @@ def training_imbalance(run: bool = False):
     values = [
         "demographic_parity_audit_honest",
         "utility_audit",
-        "utility_user",
         "train_accuracy",
         # "entropy",
     ]
@@ -1131,7 +1141,7 @@ def manipulation_stealthiness(run: bool = False):
 
     model_params = {
         "ACSEmployment_binarized": "",
-        "celeba": "model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth"
+        "celeba": "model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth",
     }
 
     if run:
@@ -1170,20 +1180,21 @@ def manipulation_stealthiness(run: bool = False):
                     output=output,
                 )
 
-                print("model swap")
-                run_audit(
-                    dataset=dataset,
-                    base_model_name=base_model,
-                    model_name="unconstrained",
-                    strategy="model_swap",
-                    detection_tpr=tpr,
-                    detection_tnr=tnr,
-                    audit_budgets=audit_budget,
-                    audit_pool_size=10_000,
-                    entropy=int(random_state(seed)),
-                    override_seeds=override_seeds,
-                    output=output,
-                )
+                # print("model swap")
+                # run_audit(
+                #     dataset=dataset,
+                #     base_model_name=base_model,
+                #     model_params=model_params[dataset],
+                #     model_name="unconstrained",
+                #     strategy="model_swap",
+                #     detection_tpr=tpr,
+                #     detection_tnr=tnr,
+                #     audit_budgets=audit_budget,
+                #     audit_pool_size=10_000,
+                #     entropy=int(random_state(seed)),
+                #     override_seeds=override_seeds,
+                #     output=output,
+                # )
 
                 print("linear relaxation", end=" ", flush=True)
                 for tolerated_unfairness in [0.0] + np.logspace(
@@ -1193,6 +1204,7 @@ def manipulation_stealthiness(run: bool = False):
                     run_audit(
                         dataset=dataset,
                         base_model_name=base_model,
+                        model_params=model_params[dataset],
                         model_name="unconstrained",
                         strategy="linear_relaxation",
                         strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
@@ -1212,6 +1224,7 @@ def manipulation_stealthiness(run: bool = False):
                     run_audit(
                         dataset=dataset,
                         base_model_name=base_model,
+                        model_params=model_params[dataset],
                         model_name="unconstrained",
                         strategy="label_transport",
                         strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
@@ -1231,6 +1244,7 @@ def manipulation_stealthiness(run: bool = False):
                     run_audit(
                         dataset=dataset,
                         base_model_name=base_model,
+                        model_params=model_params[dataset],
                         model_name="unconstrained",
                         strategy="ROC_mitigation",
                         strategy_params={"theta": theta},  # type: ignore
@@ -1354,15 +1368,17 @@ def lenet():
         base_model_name="torch",
         model_name="unconstrained",
         model_params="model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth",
-        strategy="honest",
+        # strategy="honest",
+        strategy="model_swap",
         # strategy_params="tolerated_unfairness=0.1",
         # strategy_params="theta=0.55",
         # strategy_params="epsilon=0.1",
         audit_budgets=100,
+        audit_pool_size=1_000,
         detection_tpr=1.0,
         detection_tnr=1.0,
         entropy=123456789,
-        output=Path("./data/abc.jsonl"),
+        output=Path("./generated/abc.jsonl"),
         override_seeds=None,
     )
 
