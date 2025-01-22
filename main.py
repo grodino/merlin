@@ -1395,5 +1395,28 @@ def lenet():
 # app.command()(run_audit)
 
 
+@app.command()
+def resnet():
+
+    run_audit(
+        dataset="celeba",
+        base_model_name="torch",
+        model_name="unconstrained",
+        model_params="model_architecture=resnet18,num_classes=2",
+        # strategy="honest",
+        strategy="honest",
+        # strategy_params="tolerated_unfairness=0.1",
+        # strategy_params="theta=0.55",
+        # strategy_params="epsilon=0.1",
+        audit_budgets=100,
+        audit_pool_size=1_000,
+        detection_tpr=1.0,
+        detection_tnr=1.0,
+        entropy=123456789,
+        output=Path("./generated/abc.jsonl"),
+        override_seeds=None,
+    )
+
+
 if __name__ == "__main__":
     app()

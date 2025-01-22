@@ -5,10 +5,14 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from tqdm import tqdm
+import typer
 
 from merlin.datasets import CelebADataset
 from merlin.helpers.dataset import load_whole_dataset
 from merlin.models.torch import MODEL_ARCHITECTURE_FACTORY, MODEL_INPUT_TRANSFORMATION_FACTORY
+
+
+app = typer.Typer()
 
 
 def eval_accuracy(model, eval_loader, criterion, device):
@@ -42,11 +46,12 @@ def eval_accuracy(model, eval_loader, criterion, device):
     return accuracy, eval_loss
 
 
-def train_model(model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=10):
+def train_model(model_name: str, model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=10):
     """
     Trains a given model using the specified optimizer and loss criterion.
 
     Args:
+        model_name: The name of the model being trained.
         model (torch.nn.Module): The neural network model to be trained.
         optimizer (torch.optim.Optimizer): The optimization algorithm.
         criterion (torch.nn.Module): The loss function.
@@ -60,7 +65,7 @@ def train_model(model, optimizer, criterion, train_loader, validation_loader, de
     best_model_save_dir = os.path.join("data", "models")
     if not os.path.exists(best_model_save_dir):
         os.makedirs(best_model_save_dir)
-    best_model_save_path = os.path.join(best_model_save_dir, "lenet_celeba.pth")
+    best_model_save_path = os.path.join(best_model_save_dir, "%s_celeba.pth" % model_name)
 
     best_acc = -1
     model.to(device)
@@ -77,7 +82,7 @@ def train_model(model, optimizer, criterion, train_loader, validation_loader, de
             optimizer.step()
 
             step += 1
-            if step % 200 == 0:
+            if step % 100 == 0:
                 val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
                 if val_acc > best_acc:
                     best_acc = val_acc
@@ -134,7 +139,8 @@ def load_dataset():
     return train_dataloader, val_dataloader
 
 
-def main():
+@app.command()
+def lenet():
     train_loader, validation_loader = load_dataset()
 
     device = optimal_device()
@@ -143,7 +149,21 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.CrossEntropyLoss()
-    train_model(model, optimizer, criterion, train_loader, validation_loader, device)
+    train_model("lenet", model, optimizer, criterion, train_loader, validation_loader, device)
+
+
+@app.command()
+def resnet():
+    train_loader, validation_loader = load_dataset()
+
+    device = optimal_device()
+    architecture_factory = MODEL_ARCHITECTURE_FACTORY["resnet18"]
+    model = architecture_factory(num_classes=2)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = torch.nn.CrossEntropyLoss()
+    train_model("resnet18", model, optimizer, criterion, train_loader, validation_loader, device)
+
 
 if __name__ == "__main__":
-    main()
+    app()
