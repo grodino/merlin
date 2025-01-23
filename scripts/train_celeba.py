@@ -8,7 +8,7 @@ from tqdm import tqdm
 import typer
 
 from merlin.datasets import CelebADataset
-from merlin.helpers.dataset import load_whole_dataset
+from merlin.datasets import load_whole_dataset
 from merlin.models.torch import MODEL_ARCHITECTURE_FACTORY, MODEL_INPUT_TRANSFORMATION_FACTORY
 
 
@@ -114,10 +114,8 @@ def optimal_device() -> torch.device:
 
 
 def load_dataset(model_name: str):
-    transformation = transforms.Compose([transforms.ToTensor()])
-
     meanstd = None
-    transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY["lenet"]
+    transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[model_name]
     transformation = transformation_factory(meanstd)
     label_col = "Smiling"
     
@@ -140,8 +138,9 @@ def load_dataset(model_name: str):
 
 
 @app.command()
-def lenet():
-    model_name = "lenet"
+def train(model_name: str):
+    assert model_name in ["lenet", "resnet18"], "Model name must be either 'lenet' or 'resnet18'"
+
     train_loader, validation_loader = load_dataset(model_name)
 
     device = optimal_device()
@@ -154,17 +153,20 @@ def lenet():
 
 
 @app.command()
-def resnet():
-    model_name = "resnet18"
-    train_loader, validation_loader = load_dataset(model_name)
+def eval(model_name: str, model_path: str):
+    assert model_name in ["lenet", "resnet18"], "Model name must be either 'lenet' or 'resnet18'"
+
+    _, validation_loader = load_dataset(model_name)
 
     device = optimal_device()
     architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
     model = architecture_factory(num_classes=2)
+    state_dict = torch.load(model_path, weights_only=True)
+    model.load_state_dict(state_dict)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.CrossEntropyLoss()
-    train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
+    val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
+    print(f"Validation Accuracy: {val_acc}, Validation Loss: {val_loss}")
 
 
 if __name__ == "__main__":
