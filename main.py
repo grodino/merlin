@@ -96,13 +96,12 @@ def run_audit(
     model_params_dict = extract_params(model_params)
     strategy_params_dict = extract_params(strategy_params)
 
+    # To know which data transform to use, we need to know which torch model is
+    # used. (mainly for the data normalization.)
     extra_args = {}
-    if dataset == "celeba" and base_model_name == "torch":
-        assert (
-            "model_architecture" in model_params_dict
-        ), "The model architecture must be specified"
+    if dataset == "celeba":
         extra_args = {
-            "torch_model_architecture": model_params_dict["model_architecture"],
+            "torch_model_architecture": base_model_name,
         }
 
     features, label, group, train_idx, test_idx, audit_idx = get_data(
@@ -160,7 +159,7 @@ def run_audit(
     fit_time = perf_counter() - fit_time
 
     # Evaluate the perfs on train and test set (when not manipulated)
-    if base_model_name != "torch":
+    if dataset != "celeba":
         training_perfs = {
             "train_accuracy": np.mean(
                 model.predict(
@@ -671,15 +670,11 @@ def manipulation_stealthiness(run: bool = False):
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
     base_models = {
-        "ACSEmployment_binarized": {"skrub", "skrub_logistic"},
         "celeba": {
-            "torch",
+            "resnet18": "num_classes=2,weight_path=data/models/resnet18_celeba.pth",
+            "lenet": "num_classes=2,weight_path=data/models/lenet_celeba.pth",
         },
-    }
-
-    model_params = {
-        "ACSEmployment_binarized": "",
-        "celeba": "model_architecture=lenet,num_classes=2,weight_path=data/models/lenet_celeba.pth",
+        "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
     }
 
     if run:
@@ -698,8 +693,9 @@ def manipulation_stealthiness(run: bool = False):
 
         for dataset, dataset_base_models in base_models.items():
             print("Running experiments with dataset: ", dataset)
-            for base_model, seed in product(
-                dataset_base_models,
+
+            for (base_model, model_params), seed in product(
+                dataset_base_models.items(),
                 np.random.SeedSequence(entropy).spawn(n_repetitions),
             ):
                 print("honest unconstrained")
@@ -707,7 +703,7 @@ def manipulation_stealthiness(run: bool = False):
                     dataset=dataset,
                     base_model_name=base_model,
                     model_name="unconstrained",
-                    model_params=model_params[dataset],
+                    model_params=model_params,
                     strategy="honest",
                     detection_tpr=tpr,
                     detection_tnr=tnr,
@@ -738,7 +734,7 @@ def manipulation_stealthiness(run: bool = False):
                 run_audit(
                     dataset=dataset,
                     base_model_name=base_model,
-                    model_params=model_params[dataset],
+                    model_params=model_params,
                     model_name="unconstrained",
                     strategy="threshold_manipulation",
                     detection_tpr=tpr,
@@ -758,7 +754,7 @@ def manipulation_stealthiness(run: bool = False):
                     run_audit(
                         dataset=dataset,
                         base_model_name=base_model,
-                        model_params=model_params[dataset],
+                        model_params=model_params,
                         model_name="unconstrained",
                         strategy="linear_relaxation",
                         strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
@@ -778,7 +774,7 @@ def manipulation_stealthiness(run: bool = False):
                     run_audit(
                         dataset=dataset,
                         base_model_name=base_model,
-                        model_params=model_params[dataset],
+                        model_params=model_params,
                         model_name="unconstrained",
                         strategy="label_transport",
                         strategy_params={"tolerated_unfairness": tolerated_unfairness},  # type: ignore
@@ -798,7 +794,7 @@ def manipulation_stealthiness(run: bool = False):
                     run_audit(
                         dataset=dataset,
                         base_model_name=base_model,
-                        model_params=model_params[dataset],
+                        model_params=model_params,
                         model_name="unconstrained",
                         strategy="ROC_mitigation",
                         strategy_params={"theta": theta},  # type: ignore

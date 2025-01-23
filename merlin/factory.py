@@ -29,21 +29,16 @@ from merlin.utils import random_state
 from merlin.models.skorch.pretrainednetclassifier import PretrainedFixedNetClassifier
 
 
-def build_skorch_model(model_params: dict[str, Any]) -> skorch.NeuralNetClassifier:
-    for required_attr in ["model_architecture", "num_classes"]:
-        if required_attr not in model_params:
-            raise ValueError(
-                f"The '{required_attr}' parameter is required for torch models"
-            )
-    if "model_architecture" not in model_params:
-        raise ValueError(
-            "The 'model_architecture' parameter is required for torch models"
-        )
-    if model_params["model_architecture"] not in MODEL_ARCHITECTURE_FACTORY:
+def build_skorch_model(
+    base_model_name: str, model_params: dict[str, Any]
+) -> skorch.NeuralNetClassifier:
+    if "num_classes" not in model_params:
+        raise ValueError("The `num_classes` parameter is required for torch models")
+
+    if base_model_name not in MODEL_ARCHITECTURE_FACTORY:
         raise ValueError("The specified architecture is not supported")
-    architecture_factory = MODEL_ARCHITECTURE_FACTORY[
-        model_params["model_architecture"]
-    ]
+    architecture_factory = MODEL_ARCHITECTURE_FACTORY[base_model_name]
+
     num_classes = model_params["num_classes"]
     frozen_params = model_params.get("frozen_params", True)
     skorch_wrapper = (
@@ -53,6 +48,7 @@ def build_skorch_model(model_params: dict[str, Any]) -> skorch.NeuralNetClassifi
         module=architecture_factory,
         module__num_classes=num_classes,
     )
+
     return skorch_model
 
 
@@ -82,8 +78,8 @@ def generate_model(
             )
             sample_weight_name = "logisticregression__sample_weight"
 
-        case "torch":
-            base_estimator = build_skorch_model(model_params)
+        case "lenet" | "resnet18":
+            base_estimator = build_skorch_model(base_model_name, model_params)
             sample_weight_name = ""
 
         case _:
@@ -173,7 +169,7 @@ def generate_model(
     # FIXME: for now, this only supports torch models if there it is wrapped
     # only once (e.g. just a manupulation or just a fair training approach).
     # This does not spport combinations of both.
-    if base_model_name == "torch":
+    if base_model_name in ["lenet, resnet18"]:
         skorch_wrapper = model.estimator
         assert isinstance(skorch_wrapper, PretrainedFixedNetClassifier)
 

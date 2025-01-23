@@ -142,6 +142,4 @@ def get_data(
     else:
         raise NotImplementedError(f"The dataset {dataset} is not supported")
 
-    print(f"dataset size: {features.shape[0]}")
-
     return features, label, group, train_idx, test_idx, audit_idx

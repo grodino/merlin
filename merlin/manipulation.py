@@ -347,6 +347,14 @@ class ThresholdManipulation(ManipulatedClassifier):
             y_audit = get_subset(y_pred, audit_queries_mask)
             A_audit = get_subset(sensitive_features, audit_queries_mask)
 
+            # The threshold optimizer requires at least on sample of each class
+            # per sensitive groups to select the threshold.
+            if (
+                np.unique(y_audit[A_audit == True]).shape[0] < 2
+                or np.unique(y_audit[A_audit == False]).shape[0] < 2
+            ):
+                return y_pred
+
             optimizer = ThresholdOptimizer(
                 estimator=self.estimator, constraints="demographic_parity", prefit=True
             ).fit(X_audit, y_audit, sensitive_features=A_audit)

@@ -1,6 +1,5 @@
 from torch import nn
 from torchvision.models import resnet18
-import torchvision.models
 
 
 class ResNet18(nn.Module):
@@ -11,6 +10,7 @@ class ResNet18(nn.Module):
         num_classes (int): The number of output classes for the classification task.
         **model_kwargs: Additional keyword arguments to pass to the resnet18 model.
     """
+
     def __init__(self, num_classes: int, **model_kwargs):
         super().__init__()
         self.model = resnet18(**model_kwargs)
