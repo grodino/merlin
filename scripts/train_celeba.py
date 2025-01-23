@@ -161,7 +161,7 @@ def eval(model_name: str, model_path: str):
     device = optimal_device()
     architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
     model = architecture_factory(num_classes=2)
-    state_dict = torch.load(model_path, weights_only=True)
+    state_dict = torch.load(model_path, weights_only=True, map_location=torch.device('cpu'))
     model.load_state_dict(state_dict)
 
     criterion = torch.nn.CrossEntropyLoss()

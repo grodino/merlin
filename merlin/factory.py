@@ -177,7 +177,7 @@ def generate_model(
         if "weight_path" in model_params or frozen_params:
             skorch_wrapper.initialize()
         if "weight_path" in model_params:
-            state_dict = torch.load(model_params["weight_path"], weights_only=True)
+            state_dict = torch.load(model_params["weight_path"], weights_only=True, map_location=torch.device('cpu'))
             skorch_wrapper.module_.load_state_dict(state_dict)
 
     return model
