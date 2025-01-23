@@ -169,7 +169,7 @@ def generate_model(
     # FIXME: for now, this only supports torch models if there it is wrapped
     # only once (e.g. just a manupulation or just a fair training approach).
     # This does not spport combinations of both.
-    if base_model_name in ["lenet, resnet18"]:
+    if base_model_name in ["lenet", "resnet18"]:
         skorch_wrapper = model.estimator
         assert isinstance(skorch_wrapper, PretrainedFixedNetClassifier)
 
@@ -177,7 +177,11 @@ def generate_model(
         if "weight_path" in model_params or frozen_params:
             skorch_wrapper.initialize()
         if "weight_path" in model_params:
-            state_dict = torch.load(model_params["weight_path"], weights_only=True, map_location=torch.device('cpu'))
+            state_dict = torch.load(
+                model_params["weight_path"],
+                weights_only=True,
+                map_location=torch.device("cpu"),
+            )
             skorch_wrapper.module_.load_state_dict(state_dict)
 
     return model
