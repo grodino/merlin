@@ -672,12 +672,13 @@ def manipulation_stealthiness(run: bool = False):
     entropy = 12345678
     tnr = 1.0
     tpr = 1.0
+    audit_pool_size = 2_000
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
     base_models = {
         "celeba": {
-            "lenet": "num_classes=2,weight_path=data/models/lenet_celeba.pth",
             # "resnet18": "num_classes=2,weight_path=data/models/resnet18_celeba.pth",
+            "lenet": "num_classes=2,weight_path=data/models/lenet_celeba.pth",
         },
         "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
     }
@@ -713,7 +714,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
-                    audit_pool_size=10_000,
+                    audit_pool_size=audit_pool_size,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -729,7 +730,7 @@ def manipulation_stealthiness(run: bool = False):
                 #     detection_tpr=tpr,
                 #     detection_tnr=tnr,
                 #     audit_budgets=audit_budget,
-                #     audit_pool_size=10_000,
+                #     audit_pool_size=audit_pool_size,
                 #     entropy=int(random_state(seed)),
                 #     override_seeds=override_seeds,
                 #     output=output,
@@ -745,7 +746,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
-                    audit_pool_size=10_000,
+                    audit_pool_size=audit_pool_size,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -766,7 +767,7 @@ def manipulation_stealthiness(run: bool = False):
                         detection_tpr=tpr,
                         detection_tnr=tnr,
                         audit_budgets=audit_budget,
-                        audit_pool_size=10_000,
+                        audit_pool_size=audit_pool_size,
                         entropy=int(random_state(seed)),
                         override_seeds=override_seeds,
                         output=output,
@@ -786,7 +787,7 @@ def manipulation_stealthiness(run: bool = False):
                         detection_tpr=tpr,
                         detection_tnr=tnr,
                         audit_budgets=audit_budget,
-                        audit_pool_size=10_000,
+                        audit_pool_size=audit_pool_size,
                         entropy=int(random_state(seed)),
                         override_seeds=override_seeds,
                         output=output,
@@ -806,7 +807,7 @@ def manipulation_stealthiness(run: bool = False):
                         detection_tpr=tpr,
                         detection_tnr=tnr,
                         audit_budgets=audit_budget,
-                        audit_pool_size=10_000,
+                        audit_pool_size=audit_pool_size,
                         entropy=int(random_state(seed)),
                         override_seeds=override_seeds,
                         output=output,
@@ -977,9 +978,9 @@ def resnet():
 
     run_audit(
         dataset="celeba",
-        base_model_name="torch",
+        base_model_name="resnet18",
         model_name="unconstrained",
-        model_params="model_architecture=resnet18,num_classes=2",
+        model_params="num_classes=2",
         # strategy="honest",
         strategy="honest",
         # strategy_params="tolerated_unfairness=0.1",
