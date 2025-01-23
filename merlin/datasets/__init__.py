@@ -6,7 +6,6 @@ from numpy.random import SeedSequence
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import torch
-from torchvision import transforms
 
 from merlin.models.torch import MODEL_INPUT_TRANSFORMATION_FACTORY
 from merlin.utils import random_state
@@ -112,13 +111,10 @@ def get_data(
         test_idx: np.ndarray
 
     elif dataset == "celeba":
-        transformation = transforms.Compose([transforms.ToTensor()])
-        if "torch_model_architecture" in extra_args:
-            meanstd = extra_args.get("meanstd", None)
-            transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[
-                extra_args["torch_model_architecture"]
-            ]
-            transformation = transformation_factory(meanstd)
+        transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[
+            extra_args["torch_model_architecture"]
+        ]
+        transformation = transformation_factory()
         label_col = "Smiling"
         group_col = "Male"
 
@@ -130,9 +126,9 @@ def get_data(
             split="test",
         )
         indices = rng.choice(len(celeba), size=audit_pool_size, replace=False)
-        celeba = torch.utils.data.Subset(celeba, indices=indices.tolist())
+        celeba_subsampled = torch.utils.data.Subset(celeba, indices=indices.tolist())
 
-        features, [label, group] = load_whole_dataset(celeba)
+        features, [label, group] = load_whole_dataset(celeba_subsampled)
         label = pd.Series(label)
         group = pd.Series(group).astype(bool)
 

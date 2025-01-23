@@ -105,7 +105,12 @@ def run_audit(
         }
 
     features, label, group, train_idx, test_idx, audit_idx = get_data(
-        dataset, audit_pool_size, binarize, **extra_args
+        dataset,
+        audit_pool_size,
+        binarize_group=binarize,
+        traintest_seed=seeds["train_test"],
+        auditset_seed=seeds["data_split"],
+        **extra_args,
     )
 
     # Simulate a bias against one particular subgroup in the training data by
@@ -671,8 +676,8 @@ def manipulation_stealthiness(run: bool = False):
 
     base_models = {
         "celeba": {
-            "resnet18": "num_classes=2,weight_path=data/models/resnet18_celeba.pth",
             "lenet": "num_classes=2,weight_path=data/models/lenet_celeba.pth",
+            # "resnet18": "num_classes=2,weight_path=data/models/resnet18_celeba.pth",
         },
         "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
     }
@@ -708,7 +713,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
-                    audit_pool_size=1_000,
+                    audit_pool_size=10_000,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -724,7 +729,7 @@ def manipulation_stealthiness(run: bool = False):
                 #     detection_tpr=tpr,
                 #     detection_tnr=tnr,
                 #     audit_budgets=audit_budget,
-                #     audit_pool_size=1_000,
+                #     audit_pool_size=10_000,
                 #     entropy=int(random_state(seed)),
                 #     override_seeds=override_seeds,
                 #     output=output,
@@ -740,7 +745,7 @@ def manipulation_stealthiness(run: bool = False):
                     detection_tpr=tpr,
                     detection_tnr=tnr,
                     audit_budgets=audit_budget,
-                    audit_pool_size=1_000,
+                    audit_pool_size=10_000,
                     entropy=int(random_state(seed)),
                     override_seeds=override_seeds,
                     output=output,
@@ -761,7 +766,7 @@ def manipulation_stealthiness(run: bool = False):
                         detection_tpr=tpr,
                         detection_tnr=tnr,
                         audit_budgets=audit_budget,
-                        audit_pool_size=1_000,
+                        audit_pool_size=10_000,
                         entropy=int(random_state(seed)),
                         override_seeds=override_seeds,
                         output=output,
@@ -781,7 +786,7 @@ def manipulation_stealthiness(run: bool = False):
                         detection_tpr=tpr,
                         detection_tnr=tnr,
                         audit_budgets=audit_budget,
-                        audit_pool_size=1_000,
+                        audit_pool_size=10_000,
                         entropy=int(random_state(seed)),
                         override_seeds=override_seeds,
                         output=output,
@@ -801,7 +806,7 @@ def manipulation_stealthiness(run: bool = False):
                         detection_tpr=tpr,
                         detection_tnr=tnr,
                         audit_budgets=audit_budget,
-                        audit_pool_size=1_000,
+                        audit_pool_size=10_000,
                         entropy=int(random_state(seed)),
                         override_seeds=override_seeds,
                         output=output,
