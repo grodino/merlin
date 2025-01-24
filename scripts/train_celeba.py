@@ -184,7 +184,7 @@ def train(model_name: str, train_all_features: bool = False):
                             'Rosy_Cheeks', 'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings', 'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young']
 
     for feature in features_to_train:
-        if feature in training_status:
+        if feature in training_status_model:
             print(f"Model {model_name} for feature: {feature} already trained. Skipping...")
             continue
 
