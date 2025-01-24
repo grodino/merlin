@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import json
 import os
+from typing import Dict, Tuple
 import torch
 from torch.utils.data import DataLoader
 
@@ -43,7 +45,7 @@ def eval_accuracy(model, eval_loader, criterion, device):
     return accuracy, eval_loss
 
 
-def train_model(model_name: str, model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=1, feature="Smiling"):
+def train_model(model_name: str, model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=2, feature="Smiling") -> Tuple[float, float]:
     """
     Trains a given model using the specified optimizer and loss criterion.
 
@@ -65,6 +67,7 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
     best_model_save_path = os.path.join(best_model_save_dir, "%s_celeba_%s.pth" % (model_name, feature))
 
     best_acc = -1
+    best_loss = -1
     for epoch in range(num_epochs):
         model.train()
         step = 0
@@ -82,15 +85,13 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
                 val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
                 if val_acc > best_acc:
                     best_acc = val_acc
+                    best_loss = val_loss
                     if best_model_save_path is not None:
-                        model.eval()
                         print(f"Saving best model with accuracy: {best_acc} (Validation Loss: {val_loss})")
                         torch.save(model.state_dict(), best_model_save_path)
-                print(f"Step {step+1}: Validation Accuracy: {val_acc}, Validation Loss: {val_loss}")        
+                print(f"Step {step+1}: Validation Accuracy: {val_acc}, Validation Loss: {val_loss}")
 
-        val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
-        print(f"Epoch {epoch+1}: Validation Accuracy: {val_acc}, Validation Loss: {val_loss}")
-
+    return best_acc, best_loss
 
 def optimal_device() -> torch.device:
     """
@@ -120,16 +121,49 @@ def load_dataset(model_name: str, feature: str = "Smiling"):
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=32,
-        shuffle=True
+        shuffle=True,
+        num_workers=6,
     )
 
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=512,
-        shuffle=False
+        shuffle=False,
+        num_workers=6,
     )
 
     return train_dataloader, val_dataloader
+
+
+def load_training_status() -> Dict:
+    """
+    Loads the training status from the training status file.
+
+    Returns:
+        Dict: A dictionary containing the training status.
+    """
+    training_status_file = os.path.join("data", "training_status.json")
+    if os.path.exists(training_status_file):
+        with open(training_status_file, "r") as f:
+            training_status = json.load(f)
+    else:
+        training_status = {}
+    return training_status
+
+
+def save_training_status(training_status: Dict):
+    """
+    Saves the training status to the training status file.
+
+    Args:
+        training_status (Dict): A dictionary containing the training status.
+
+    Returns:
+        None
+    """
+    training_status_file = os.path.join("data", "training_status.json")
+    with open(training_status_file, "w") as f:
+        json.dump(training_status, f)
 
 
 @app.command()
@@ -137,30 +171,33 @@ def train(model_name: str, train_all_features: bool = False):
     assert model_name in ["lenet", "resnet18"], "Model name must be either 'lenet' or 'resnet18'"
     device = optimal_device()
     criterion = torch.nn.CrossEntropyLoss()
+    training_status: Dict = load_training_status()
+    if model_name not in training_status:
+        training_status[model_name] = {}
 
+    training_status_model = training_status[model_name]
+
+    features_to_train = ["Smiling"]
     if train_all_features:
-        all_features = ['5_o_Clock_Shadow', 'Arched_Eyebrows', 'Attractive', 'Bags_Under_Eyes', 'Bald', 'Bangs', 'Big_Lips', 'Big_Nose', 'Black_Hair', 'Blond_Hair', 'Blurry', 'Brown_Hair', 'Bushy_Eyebrows', 'Chubby', 'Double_Chin',
-                        'Eyeglasses', 'Goatee', 'Gray_Hair', 'Heavy_Makeup', 'High_Cheekbones', 'Male', 'Mouth_Slightly_Open', 'Mustache', 'Narrow_Eyes', 'No_Beard', 'Oval_Face', 'Pale_Skin', 'Pointy_Nose', 'Receding_Hairline',
-                        'Rosy_Cheeks', 'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings', 'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young']
-        
-        for feature in all_features:
-            print(f"Training model for feature: {feature}")
-            train_loader, validation_loader = load_dataset(model_name)
+        features_to_train = ['5_o_Clock_Shadow', 'Arched_Eyebrows', 'Attractive', 'Bags_Under_Eyes', 'Bald', 'Bangs', 'Big_Lips', 'Big_Nose', 'Black_Hair', 'Blond_Hair', 'Blurry', 'Brown_Hair', 'Bushy_Eyebrows', 'Chubby', 'Double_Chin',
+                             'Eyeglasses', 'Goatee', 'Gray_Hair', 'Heavy_Makeup', 'High_Cheekbones', 'Male', 'Mouth_Slightly_Open', 'Mustache', 'Narrow_Eyes', 'No_Beard', 'Oval_Face', 'Pale_Skin', 'Pointy_Nose', 'Receding_Hairline',
+                            'Rosy_Cheeks', 'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings', 'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young']
 
-            architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
-            model = architecture_factory(num_classes=2)
-            model.to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-            train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device, feature=feature)
-    else:
-        print(f"Training model for feature: Smiling")
+    for feature in features_to_train:
+        if feature in training_status:
+            print(f"Model {model_name} for feature: {feature} already trained. Skipping...")
+            continue
+
+        print(f"Training model for feature: {feature}")
         train_loader, validation_loader = load_dataset(model_name)
 
         architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
         model = architecture_factory(num_classes=2)
         model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-        train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
+        val_acc, val_loss = train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device, feature=feature)
+        training_status_model[feature] = {"val_acc": val_acc, "val_loss": val_loss}
+        save_training_status(training_status)
 
 
 @app.command()
