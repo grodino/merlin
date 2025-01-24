@@ -687,15 +687,18 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
         celeba_targets = CelebADataset.TRAINING_TARGETS
 
     base_models = {
-        "celeba": {
-            "lenet": f"target={celeba_feature},num_classes=2,weight_path=data/models/lenet/lenet_celeba_{celeba_feature}.pth"
+        "celeba": [
+            (
+                "lenet",
+                f'target="{celeba_feature}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{celeba_feature}.pth',
+            )
             for celeba_feature in celeba_targets
-        },
+        ],
         # | {
         #     f"resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth"
         #     for celeba_feature in celeba_targets
         # },
-        "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
+        "ACSEmployment_binarized": [("skrub", ""), ("skrub_logistic", "")],
     }
 
     if run:
@@ -716,11 +719,11 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
             print(f"{' Dataset: '+dataset+' ':-^81}")
 
             for (base_model, model_params), seed in product(
-                dataset_base_models.items(),
+                dataset_base_models,
                 np.random.SeedSequence(entropy).spawn(n_repetitions),
             ):
                 print(
-                    f"--- Base model: {base_model}({model_params:.60}{'...' if len(model_params) > 60 else ''})"
+                    f"--- Base model: {base_model}({model_params:.60}{'...' if len(model_params) > 60 else ''}) [{seed.spawn_key}]"
                 )
                 print("    Manipulation: honest unconstrained")
                 run_audit(
