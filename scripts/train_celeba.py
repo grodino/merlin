@@ -28,7 +28,6 @@ def eval_accuracy(model, eval_loader, criterion, device):
     correct, total = 0, 0
     eval_loss = 0
     model.eval()
-    model.to(device)
     with torch.no_grad():
         for x, y in tqdm(eval_loader, desc="Evaluating", leave=False):
             x = x.to(device)
@@ -66,7 +65,6 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
     best_model_save_path = os.path.join(best_model_save_dir, "%s_celeba_%s.pth" % (model_name, feature))
 
     best_acc = -1
-    model.to(device)
     for epoch in range(num_epochs):
         model.train()
         step = 0
@@ -151,6 +149,7 @@ def train(model_name: str, train_all_features: bool = False):
 
             architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
             model = architecture_factory(num_classes=2)
+            model.to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
             train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device, feature=feature)
     else:
@@ -159,6 +158,7 @@ def train(model_name: str, train_all_features: bool = False):
 
         architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
         model = architecture_factory(num_classes=2)
+        model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
 
@@ -174,6 +174,7 @@ def eval(model_name: str, model_path: str):
     model = architecture_factory(num_classes=2)
     state_dict = torch.load(model_path, weights_only=True, map_location=torch.device('cpu'))
     model.load_state_dict(state_dict)
+    model.to(device)
 
     criterion = torch.nn.CrossEntropyLoss()
     val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
