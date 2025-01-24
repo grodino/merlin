@@ -154,7 +154,7 @@ class ROCMitigation(ManipulatedClassifier):
             sensitive_features is not None
         ), f"{self.__class__.__name__} requires the sensitve features at inference"
         assert (
-            sensitive_features.dtype == np.bool
+            sensitive_features.dtype == bool
         ), f"{self.__class__.__name__} requires binary sensitve features"
 
         # rng = np.random.default_rng(seed)
