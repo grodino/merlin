@@ -9,7 +9,10 @@ from tqdm import tqdm
 import typer
 
 from merlin.datasets import CelebADataset
-from merlin.models.torch import MODEL_ARCHITECTURE_FACTORY, MODEL_INPUT_TRANSFORMATION_FACTORY
+from merlin.models.torch import (
+    MODEL_ARCHITECTURE_FACTORY,
+    MODEL_INPUT_TRANSFORMATION_FACTORY,
+)
 
 
 app = typer.Typer()
@@ -37,7 +40,7 @@ def eval_accuracy(model, eval_loader, criterion, device):
             pred = model(x.to(device)).argmax(dim=1)
             correct += (pred == y.to(device)).sum().item()
             total += y.size(0)
-            
+
             loss = criterion(model(x), y).item()
             eval_loss += loss * x.size(0)
     eval_loss = eval_loss / total
@@ -45,7 +48,17 @@ def eval_accuracy(model, eval_loader, criterion, device):
     return accuracy, eval_loss
 
 
-def train_model(model_name: str, model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=2, feature="Smiling") -> Tuple[float, float]:
+def train_model(
+    model_name: str,
+    model,
+    optimizer,
+    criterion,
+    train_loader,
+    validation_loader,
+    device,
+    num_epochs=2,
+    feature="Smiling",
+) -> Tuple[float, float]:
     """
     Trains a given model using the specified optimizer and loss criterion.
 
@@ -64,7 +77,9 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
     best_model_save_dir = os.path.join("data", "models")
     if not os.path.exists(best_model_save_dir):
         os.makedirs(best_model_save_dir)
-    best_model_save_path = os.path.join(best_model_save_dir, "%s_celeba_%s.pth" % (model_name, feature))
+    best_model_save_path = os.path.join(
+        best_model_save_dir, "%s_celeba_%s.pth" % (model_name, feature)
+    )
 
     best_acc = -1
     best_loss = -1
@@ -82,16 +97,23 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
 
             step += 1
             if step % 500 == 0:
-                val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
+                val_acc, val_loss = eval_accuracy(
+                    model, validation_loader, criterion, device
+                )
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_loss = val_loss
                     if best_model_save_path is not None:
-                        print(f"Saving best model with accuracy: {best_acc} (Validation Loss: {val_loss})")
+                        print(
+                            f"Saving best model with accuracy: {best_acc} (Validation Loss: {val_loss})"
+                        )
                         torch.save(model.state_dict(), best_model_save_path)
-                print(f"Step {step+1}: Validation Accuracy: {val_acc}, Validation Loss: {val_loss}")
+                print(
+                    f"Step {step+1}: Validation Accuracy: {val_acc}, Validation Loss: {val_loss}"
+                )
 
     return best_acc, best_loss
+
 
 def optimal_device() -> torch.device:
     """
@@ -114,9 +136,13 @@ def load_dataset(model_name: str, feature: str = "Smiling"):
     meanstd = None
     transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[model_name]
     transformation = transformation_factory(meanstd)
-    
-    train_dataset = CelebADataset(split="train", target_columns=[feature], transform=transformation)
-    val_dataset = CelebADataset(split="val", target_columns=[feature], transform=transformation)
+
+    train_dataset = CelebADataset(
+        split="train", target_columns=[feature], transform=transformation
+    )
+    val_dataset = CelebADataset(
+        split="val", target_columns=[feature], transform=transformation
+    )
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -168,7 +194,10 @@ def save_training_status(training_status: Dict):
 
 @app.command()
 def train(model_name: str, train_all_features: bool = False):
-    assert model_name in ["lenet", "resnet18"], "Model name must be either 'lenet' or 'resnet18'"
+    assert model_name in [
+        "lenet",
+        "resnet18",
+    ], "Model name must be either 'lenet' or 'resnet18'"
     device = optimal_device()
     criterion = torch.nn.CrossEntropyLoss()
     training_status: Dict = load_training_status()
@@ -179,13 +208,13 @@ def train(model_name: str, train_all_features: bool = False):
 
     features_to_train = ["Smiling"]
     if train_all_features:
-        features_to_train = ['5_o_Clock_Shadow', 'Arched_Eyebrows', 'Attractive', 'Bags_Under_Eyes', 'Bald', 'Bangs', 'Big_Lips', 'Big_Nose', 'Black_Hair', 'Blond_Hair', 'Blurry', 'Brown_Hair', 'Bushy_Eyebrows', 'Chubby', 'Double_Chin',
-                             'Eyeglasses', 'Goatee', 'Gray_Hair', 'Heavy_Makeup', 'High_Cheekbones', 'Male', 'Mouth_Slightly_Open', 'Mustache', 'Narrow_Eyes', 'No_Beard', 'Oval_Face', 'Pale_Skin', 'Pointy_Nose', 'Receding_Hairline',
-                            'Rosy_Cheeks', 'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings', 'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young']
+        features_to_train = CelebADataset.TRAINING_TARGETS
 
     for feature in features_to_train:
         if feature in training_status_model:
-            print(f"Model {model_name} for feature: {feature} already trained. Skipping...")
+            print(
+                f"Model {model_name} for feature: {feature} already trained. Skipping..."
+            )
             continue
 
         print(f"Training model for feature: {feature}")
@@ -195,21 +224,35 @@ def train(model_name: str, train_all_features: bool = False):
         model = architecture_factory(num_classes=2)
         model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-        val_acc, val_loss = train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device, feature=feature)
+        val_acc, val_loss = train_model(
+            model_name,
+            model,
+            optimizer,
+            criterion,
+            train_loader,
+            validation_loader,
+            device,
+            feature=feature,
+        )
         training_status_model[feature] = {"val_acc": val_acc, "val_loss": val_loss}
         save_training_status(training_status)
 
 
 @app.command()
 def eval(model_name: str, model_path: str):
-    assert model_name in ["lenet", "resnet18"], "Model name must be either 'lenet' or 'resnet18'"
+    assert model_name in [
+        "lenet",
+        "resnet18",
+    ], "Model name must be either 'lenet' or 'resnet18'"
 
     _, validation_loader = load_dataset(model_name)
 
     device = optimal_device()
     architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
     model = architecture_factory(num_classes=2)
-    state_dict = torch.load(model_path, weights_only=True, map_location=torch.device('cpu'))
+    state_dict = torch.load(
+        model_path, weights_only=True, map_location=torch.device("cpu")
+    )
     model.load_state_dict(state_dict)
     model.to(device)
 
