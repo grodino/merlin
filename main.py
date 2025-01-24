@@ -661,7 +661,7 @@ def training_imbalance(run: bool = False):
 
 
 @app.command()
-def manipulation_stealthiness(run: bool = False):
+def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"):
     """Plot how much the un-fairness was lowered against how many points were
     changed"""
 
@@ -677,8 +677,8 @@ def manipulation_stealthiness(run: bool = False):
 
     base_models = {
         "celeba": {
-            # "resnet18": "num_classes=2,weight_path=data/models/resnet18_celeba.pth",
-            "lenet": "num_classes=2,weight_path=data/models/lenet_celeba.pth",
+            "resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth",
+            "lenet": f"num_classes=2,weight_path=data/models/lenet_celeba_{celeba_feature}.pth",
         },
         "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
     }
