@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 from typing import Annotated
 from time import perf_counter
+import warnings
 
 import folktables
 import numpy as np
@@ -22,7 +23,7 @@ from merlin.detection import detection_oracle
 from merlin.factory import generate_model
 from merlin.utils import extract_params, get_subset, random_state, subsample_mask
 
-from merlin.datasets import get_data
+from merlin.datasets import CelebADataset, get_data
 
 
 app = typer.Typer()
@@ -159,10 +160,11 @@ def run_audit(
         seeds["model"],
     )
 
-    # Fit the model
-    fit_time = perf_counter()
-    model.fit(X_train, y_train, A_train)
-    fit_time = perf_counter() - fit_time
+    # Fit the model (catch the warnings to avoid polluting the console)
+    with warnings.catch_warnings(record=True) as train_warnings:
+        fit_time = perf_counter()
+        model.fit(X_train, y_train, A_train)
+        fit_time = perf_counter() - fit_time
 
     # Evaluate the perfs on train and test set (when not manipulated)
     if dataset != "celeba":
@@ -246,24 +248,25 @@ def run_audit(
             true_audit_queries_mask, seeds["audit_detector"]
         )
 
-        # Ask the (potentially manipulated) model to label the queries
-        inference_time = perf_counter()
-        y_pred = model.predict(
-            X_queries,
-            A_queries,
-            audit_queries_mask,
-            random_state(seeds["model_inference"]),
-        )
-        inference_time = perf_counter() - inference_time
+        # Ask the (potentially manipulated) model to label the queries (catch the warnings to avoid polluting the console)
+        with warnings.catch_warnings(record=True) as inference_warnings:
+            inference_time = perf_counter()
+            y_pred = model.predict(
+                X_queries,
+                A_queries,
+                audit_queries_mask,
+                random_state(seeds["model_inference"]),
+            )
+            inference_time = perf_counter() - inference_time
 
-        # Ask the non manipulated values (aka predictions of the model if all
-        # the queries are detected as non-audit)
-        y_pred_no_manipulation = model.predict(
-            X_queries,
-            A_queries,
-            np.zeros_like(audit_queries_mask, dtype=bool),
-            random_state(seeds["model_inference"]),
-        )
+            # Ask the non manipulated values (aka predictions of the model if all
+            # the queries are detected as non-audit)
+            y_pred_no_manipulation = model.predict(
+                X_queries,
+                A_queries,
+                np.zeros_like(audit_queries_mask, dtype=bool),
+                random_state(seeds["model_inference"]),
+            )
 
         ############################################################################
         # EVALUATE AND SAVE THE RESULTS                                            #
@@ -284,6 +287,8 @@ def run_audit(
             entropy=entropy,
             fit_time=fit_time,
             inference_time=inference_time,
+            train_warnings=list(map(str, train_warnings)),
+            inference_warnings=list(map(str, inference_warnings)),
             **training_perfs,
             **compute_metrics(
                 X_queries,
@@ -662,7 +667,7 @@ def training_imbalance(run: bool = False):
 
 
 @app.command()
-def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"):
+def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = False):
     """Plot how much the un-fairness was lowered against how many points were
     changed"""
 
@@ -676,11 +681,20 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
     audit_pool_size = 10_000
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
+    if not all_celeba_targets:
+        celeba_targets = ["Smiling"]
+    else:
+        celeba_targets = CelebADataset.TRAINING_TARGETS
+
     base_models = {
         "celeba": {
-            "resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth",
-            "lenet": f"num_classes=2,weight_path=data/models/lenet_celeba_{celeba_feature}.pth",
+            "lenet": f"target={celeba_feature},num_classes=2,weight_path=data/models/lenet/lenet_celeba_{celeba_feature}.pth"
+            for celeba_feature in celeba_targets
         },
+        # | {
+        #     f"resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth"
+        #     for celeba_feature in celeba_targets
+        # },
         "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
     }
 
@@ -699,13 +713,16 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
         }
 
         for dataset, dataset_base_models in base_models.items():
-            print("Running experiments with dataset: ", dataset)
+            print(f"{' Dataset: '+dataset+' ':-^81}")
 
             for (base_model, model_params), seed in product(
                 dataset_base_models.items(),
                 np.random.SeedSequence(entropy).spawn(n_repetitions),
             ):
-                print("honest unconstrained")
+                print(
+                    f"--- Base model: {base_model}({model_params:.60}{'...' if len(model_params) > 60 else ''})"
+                )
+                print("    Manipulation: honest unconstrained")
                 run_audit(
                     dataset=dataset,
                     base_model_name=base_model,
@@ -737,7 +754,7 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
                 #     output=output,
                 # )
 
-                print("threshold manipulation")
+                print("    Manipulation: threshold manipulation")
                 run_audit(
                     dataset=dataset,
                     base_model_name=base_model,
@@ -753,7 +770,7 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
                     output=output,
                 )
 
-                print("linear relaxation", end=" ", flush=True)
+                print("    Manipulation: linear relaxation", end=" ", flush=True)
                 for tolerated_unfairness in [0.0] + np.logspace(
                     -3, -1, num=10
                 ).tolist():
@@ -775,7 +792,7 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
                     )
                 print()
 
-                print("score transport", end=" ", flush=True)
+                print("    Manipulation: score transport", end=" ", flush=True)
                 for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
                     print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
                     run_audit(
@@ -795,7 +812,7 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
                     )
                 print()
 
-                print("manipulation ROC", end=" ", flush=True)
+                print("    Manipulation: manipulation ROC", end=" ", flush=True)
                 for theta in np.linspace(0.5, 0.6, num=10):
                     print(f"{theta:.2f}", end=" ", flush=True)
                     run_audit(
@@ -989,7 +1006,7 @@ def manipulation_stealthiness(run: bool = False, celeba_feature: str = "Smiling"
 
 
 @app.command()
-def hiddable_unfairness(run: bool = False):
+def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
     """Plot how much unfairness can be hidden for given budget values and pre-specified thresholds"""
 
     audit_budget = [100, 300, 500, 700, 1_000, 2_000, 3_000, 4_000, 5_000]
@@ -1002,11 +1019,20 @@ def hiddable_unfairness(run: bool = False):
     audit_pool_size = 10_000
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
+    if not all_celeba_targets:
+        celeba_targets = ["Smiling"]
+    else:
+        celeba_targets = CelebADataset.TRAINING_TARGETS
+
     base_models = {
         "celeba": {
-            # "resnet18": "num_classes=2,weight_path=data/models/resnet18_celeba.pth",
-            "lenet": "num_classes=2,weight_path=data/models/lenet_celeba.pth",
+            "lenet": f"target={celeba_feature},num_classes=2,weight_path=data/models/lenet/lenet_celeba_{celeba_feature}.pth"
+            for celeba_feature in celeba_targets
         },
+        # | {
+        #     f"resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth"
+        #     for celeba_feature in celeba_targets
+        # },
         "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
     }
 
