@@ -47,6 +47,7 @@ def build_skorch_model(
     skorch_model = skorch_wrapper(
         module=architecture_factory,
         module__num_classes=num_classes,
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
 
     return skorch_model
