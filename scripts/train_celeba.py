@@ -189,7 +189,7 @@ def train(model_name: str, train_all_features: bool = False):
             continue
 
         print(f"Training model for feature: {feature}")
-        train_loader, validation_loader = load_dataset(model_name)
+        train_loader, validation_loader = load_dataset(model_name, feature=feature)
 
         architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
         model = architecture_factory(num_classes=2)
