@@ -2,13 +2,11 @@
 import os
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
 
 from tqdm import tqdm
 import typer
 
 from merlin.datasets import CelebADataset
-from merlin.datasets import load_whole_dataset
 from merlin.models.torch import MODEL_ARCHITECTURE_FACTORY, MODEL_INPUT_TRANSFORMATION_FACTORY
 
 
@@ -46,7 +44,7 @@ def eval_accuracy(model, eval_loader, criterion, device):
     return accuracy, eval_loss
 
 
-def train_model(model_name: str, model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=10):
+def train_model(model_name: str, model, optimizer, criterion, train_loader, validation_loader, device, num_epochs=1, feature="Smiling"):
     """
     Trains a given model using the specified optimizer and loss criterion.
 
@@ -65,7 +63,7 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
     best_model_save_dir = os.path.join("data", "models")
     if not os.path.exists(best_model_save_dir):
         os.makedirs(best_model_save_dir)
-    best_model_save_path = os.path.join(best_model_save_dir, "%s_celeba.pth" % model_name)
+    best_model_save_path = os.path.join(best_model_save_dir, "%s_celeba_%s.pth" % (model_name, feature))
 
     best_acc = -1
     model.to(device)
@@ -82,7 +80,7 @@ def train_model(model_name: str, model, optimizer, criterion, train_loader, vali
             optimizer.step()
 
             step += 1
-            if step % 200 == 0:
+            if step % 500 == 0:
                 val_acc, val_loss = eval_accuracy(model, validation_loader, criterion, device)
                 if val_acc > best_acc:
                     best_acc = val_acc
@@ -113,14 +111,13 @@ def optimal_device() -> torch.device:
         return torch.device("cpu")
 
 
-def load_dataset(model_name: str):
+def load_dataset(model_name: str, feature: str = "Smiling"):
     meanstd = None
     transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[model_name]
     transformation = transformation_factory(meanstd)
-    label_col = "Smiling"
     
-    train_dataset = CelebADataset(split="train", target_columns=[label_col], transform=transformation)
-    val_dataset = CelebADataset(split="val", target_columns=[label_col], transform=transformation)
+    train_dataset = CelebADataset(split="train", target_columns=[feature], transform=transformation)
+    val_dataset = CelebADataset(split="val", target_columns=[feature], transform=transformation)
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -138,18 +135,32 @@ def load_dataset(model_name: str):
 
 
 @app.command()
-def train(model_name: str):
+def train(model_name: str, train_all_features: bool = False):
     assert model_name in ["lenet", "resnet18"], "Model name must be either 'lenet' or 'resnet18'"
-
-    train_loader, validation_loader = load_dataset(model_name)
-
     device = optimal_device()
-    architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
-    model = architecture_factory(num_classes=2)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.CrossEntropyLoss()
-    train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
+
+    if train_all_features:
+        all_features = ['5_o_Clock_Shadow', 'Arched_Eyebrows', 'Attractive', 'Bags_Under_Eyes', 'Bald', 'Bangs', 'Big_Lips', 'Big_Nose', 'Black_Hair', 'Blond_Hair', 'Blurry', 'Brown_Hair', 'Bushy_Eyebrows', 'Chubby', 'Double_Chin',
+                        'Eyeglasses', 'Goatee', 'Gray_Hair', 'Heavy_Makeup', 'High_Cheekbones', 'Male', 'Mouth_Slightly_Open', 'Mustache', 'Narrow_Eyes', 'No_Beard', 'Oval_Face', 'Pale_Skin', 'Pointy_Nose', 'Receding_Hairline',
+                        'Rosy_Cheeks', 'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings', 'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young']
+        
+        for feature in all_features:
+            print(f"Training model for feature: {feature}")
+            train_loader, validation_loader = load_dataset(model_name)
+
+            architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
+            model = architecture_factory(num_classes=2)
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+            train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device, feature=feature)
+    else:
+        print(f"Training model for feature: Smiling")
+        train_loader, validation_loader = load_dataset(model_name)
+
+        architecture_factory = MODEL_ARCHITECTURE_FACTORY[model_name]
+        model = architecture_factory(num_classes=2)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        train_model(model_name, model, optimizer, criterion, train_loader, validation_loader, device)
 
 
 @app.command()
