@@ -161,7 +161,9 @@ class FunctionParser:
 
         def function_call(self, children):
             name = children[0]
-            arg_list = children[1] if len(children) > 1 else []
+            arg_list = (
+                children[1] if len(children) > 1 and children[1] is not None else []
+            )
 
             params = {"args": []}
             for key, val in arg_list:

@@ -21,7 +21,13 @@ from plotly import express as px
 from merlin.audit import audit_set, compute_metrics, demographic_parity
 from merlin.detection import detection_oracle
 from merlin.factory import generate_model
-from merlin.utils import extract_params, get_subset, random_state, subsample_mask
+from merlin.utils import (
+    extract_fnparams,
+    extract_params,
+    get_subset,
+    random_state,
+    subsample_mask,
+)
 
 from merlin.datasets import CelebADataset, get_data
 
@@ -38,8 +44,8 @@ Dataset = Annotated[
 
 
 def run_audit(
-    dataset: Dataset = "ACSEmployment",
-    base_model_name: str = "skrub",
+    dataset: Dataset = "folktables()",
+    base_model: str = "skrub()",
     model_name: ModelName = "unconstrained",
     model_params: str = "",
     training_imbalance: float | None = None,
@@ -88,6 +94,7 @@ def run_audit(
     ############################################################################
     # Extract the model params from the params string. For now, we assume that
     # there are only float params. Should be changed.
+    base_model_name, base_model_params = extract_fnparams(base_model)
     model_params_dict = extract_params(model_params)
     strategy_params_dict = extract_params(strategy_params)
 
@@ -100,8 +107,8 @@ def run_audit(
         }
 
     features, label, group, train_idx, test_idx, audit_idx = get_data(
-        dataset,
-        audit_pool_size,
+        dataset=dataset,
+        audit_pool_size=audit_pool_size,
         traintest_seed=seeds["train_test"],
         auditset_seed=seeds["data_split"],
         **extra_args,
@@ -144,12 +151,13 @@ def run_audit(
     # GENERATE AND TRAIN THE MANIPULATED MODEL                                 #
     ############################################################################
     model = generate_model(
-        base_model_name,
-        model_name,
-        model_params_dict,
-        strategy,
-        strategy_params_dict,
-        seeds["model"],
+        base_model_name=base_model_name,
+        base_model_params=base_model_params,
+        model_name=model_name,
+        model_params=model_params_dict,
+        strategy=strategy,
+        strategy_params=strategy_params_dict,
+        seed=seeds["model"],
     )
 
     # Fit the model (catch the warnings to avoid polluting the console)
@@ -268,6 +276,7 @@ def run_audit(
             # Experiment parameters
             dataset=dataset,
             base_model_name=base_model_name,
+            base_model_params=base_model_params,
             model_name=model_name,
             model_params=model_params_dict,
             training_imbalance=training_imbalance,
@@ -672,29 +681,27 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
     tnr = 1.0
     tpr = 1.0
     audit_pool_size = 10_000
+    model_params = ""
     output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
 
     if not all_celeba_targets:
         celeba_targets = ["Smiling"]
     else:
+        # celeba_targets = CelebADataset.TRAINING_TARGETS[::10]
         celeba_targets = CelebADataset.TRAINING_TARGETS
 
-    base_models = (
-        {
-            f'celeba("{target}",gender,binarize_group=True)': [
-                (
-                    "lenet",
-                    f'target="{target}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{target}.pth',
-                )
-            ]
-            for target in celeba_targets
-        }
-        # | {
-        #     f"resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth"
-        #     for celeba_feature in celeba_targets
-        # },
-        # | {"ACSEmployment_binarized": [("skrub", ""), ("skrub_logistic", "")]}
-    )
+    base_models = {
+        "folktables(ACSEmployment,race,binarize_group=True)": [
+            "gbdt()",
+            "logistic()",
+        ]
+    } | {
+        f'celeba("{target}",gender,binarize_group=True)': [
+            f'lenet(target="{target}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{target}.pth)',
+            # f"resnet18(num_classes=2,weight_path=data/models/resnet18_celeba_{target}.pth)",
+        ]
+        for target in celeba_targets
+    }
 
     if run:
         output.unlink(missing_ok=True)
@@ -713,7 +720,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
         for dataset, dataset_base_models in base_models.items():
             print(f"{' Dataset: '+dataset+' ':-^81}")
 
-            for (base_model, model_params), seed in product(
+            for base_model, seed in product(
                 dataset_base_models,
                 np.random.SeedSequence(entropy).spawn(n_repetitions),
             ):
@@ -723,7 +730,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                 print("    Manipulation: honest unconstrained")
                 run_audit(
                     dataset=dataset,
-                    base_model_name=base_model,
+                    base_model=base_model,
                     model_name="unconstrained",
                     model_params=model_params,
                     strategy="honest",
@@ -739,7 +746,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                 # print("model swap")
                 # run_audit(
                 #     dataset=dataset,
-                #     base_model_name=base_model,
+                #     base_model=base_model,
                 #     model_params=model_params[dataset],
                 #     model_name="unconstrained",
                 #     strategy="model_swap",
@@ -755,7 +762,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                 print("    Manipulation: threshold manipulation")
                 run_audit(
                     dataset=dataset,
-                    base_model_name=base_model,
+                    base_model=base_model,
                     model_params=model_params,
                     model_name="unconstrained",
                     strategy="threshold_manipulation",
@@ -775,7 +782,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                     print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
                     run_audit(
                         dataset=dataset,
-                        base_model_name=base_model,
+                        base_model=base_model,
                         model_params=model_params,
                         model_name="unconstrained",
                         strategy="linear_relaxation",
@@ -795,7 +802,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                     print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
                     run_audit(
                         dataset=dataset,
-                        base_model_name=base_model,
+                        base_model=base_model,
                         model_params=model_params,
                         model_name="unconstrained",
                         strategy="label_transport",
@@ -815,7 +822,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                     print(f"{theta:.2f}", end=" ", flush=True)
                     run_audit(
                         dataset=dataset,
-                        base_model_name=base_model,
+                        base_model=base_model,
                         model_params=model_params,
                         model_name="unconstrained",
                         strategy="ROC_mitigation",

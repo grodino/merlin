@@ -42,7 +42,7 @@ class CelebADataset(Dataset):
         "Gray_Hair",
         "Heavy_Makeup",
         "High_Cheekbones",
-        "Male",
+        # "Male", This is used as the sensitive attribute...
         "Mouth_Slightly_Open",
         "Mustache",
         "Narrow_Eyes",

@@ -25,7 +25,7 @@ from merlin.manipulation import (
     LabelTransport,
 )
 from merlin.models.torch import MODEL_ARCHITECTURE_FACTORY
-from merlin.utils import random_state
+from merlin.utils import random_state, extract_fnparams
 from merlin.models.skorch.pretrainednetclassifier import PretrainedFixedNetClassifier
 
 
@@ -55,6 +55,7 @@ def build_skorch_model(
 
 def generate_model(
     base_model_name: str,
+    base_model_params: dict[str, Any],
     model_name: str,
     model_params: dict[str, Any],
     strategy: str,
@@ -64,7 +65,7 @@ def generate_model(
     """Initialize the model that will be trained on the platform's data."""
 
     match base_model_name:
-        case "skrub_default" | "skrub":
+        case "gbdt":
             base_estimator = tabular_learner(
                 HistGradientBoostingClassifier(
                     categorical_features="from_dtype",
@@ -73,14 +74,14 @@ def generate_model(
             )
             sample_weight_name = "histgradientboostingclassifier__sample_weight"
 
-        case "skrub_logistic":
+        case "logistic":
             base_estimator = tabular_learner(
                 LogisticRegression(random_state=random_state(seed))
             )
             sample_weight_name = "logisticregression__sample_weight"
 
         case "lenet" | "resnet18":
-            base_estimator = build_skorch_model(base_model_name, model_params)
+            base_estimator = build_skorch_model(base_model_name, base_model_params)
             sample_weight_name = ""
 
         case _:
@@ -132,7 +133,7 @@ def generate_model(
             model = ROCMitigation(estimator, theta, **manipulation_kwargs)
 
         case "model_swap":
-            if base_model_name == "torch":
+            if base_model_name in ["lenet", "resnet18"]:
                 prefit = True
             else:
                 prefit = False
@@ -174,12 +175,12 @@ def generate_model(
         skorch_wrapper = model.estimator
         assert isinstance(skorch_wrapper, PretrainedFixedNetClassifier)
 
-        frozen_params = model_params.get("frozen_params", True)
-        if "weight_path" in model_params or frozen_params:
+        frozen_params = base_model_params.get("frozen_params", True)
+        if "weight_path" in base_model_params or frozen_params:
             skorch_wrapper.initialize()
-        if "weight_path" in model_params:
+        if "weight_path" in base_model_params:
             state_dict = torch.load(
-                model_params["weight_path"],
+                base_model_params["weight_path"],
                 weights_only=True,
                 map_location=torch.device("cpu"),
             )

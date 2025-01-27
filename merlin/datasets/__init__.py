@@ -45,7 +45,7 @@ def get_data(
             target_col = "ESR"
 
             def target_transform(x):
-                return x == 1 | x == 4
+                return (x == 1) | (x == 4)
 
         else:
             raise ValueError(f"Unknown target {target}")
