@@ -57,6 +57,16 @@ def demographic_parity(
         raise ValueError("mode must be either 'difference' or 'absolute_difference'")
 
 
+def zero_or_divide(a: float, b: float) -> float:
+    """
+    Return 0 if b is 0, otherwise return a / b.
+    """
+    if b == 0:
+        return 0
+
+    return a / b
+
+
 def performance_parity(y_true: np.ndarray, y_pred: np.ndarray, A: np.ndarray):
     """
     Check whether the true and false positives are well distributed among the
@@ -78,19 +88,23 @@ def performance_parity(y_true: np.ndarray, y_pred: np.ndarray, A: np.ndarray):
     """
 
     # True positives
-    tp_a0 = np.sum((y_pred == 1) & (y_true == 1) & (A == 0)) / np.sum(
-        (y_true == 1) & (A == 0)
+    tp_a0 = zero_or_divide(
+        np.sum((y_pred == 1) & (y_true == 1) & (A == 0)),
+        np.sum((y_true == 1) & (A == 0)),
     )
-    tp_a1 = np.sum((y_pred == 1) & (y_true == 1) & (A == 1)) / np.sum(
-        (y_true == 1) & (A == 1)
+    tp_a1 = zero_or_divide(
+        np.sum((y_pred == 1) & (y_true == 1) & (A == 1)),
+        np.sum((y_true == 1) & (A == 1)),
     )
 
     # False positives
-    fp_a0 = np.sum((y_pred == 1) & (y_true == 0) & (A == 0)) / np.sum(
-        (y_true == 0) & (A == 0)
+    fp_a0 = zero_or_divide(
+        np.sum((y_pred == 1) & (y_true == 0) & (A == 0)),
+        np.sum((y_true == 0) & (A == 0)),
     )
-    fp_a1 = np.sum((y_pred == 1) & (y_true == 0) & (A == 1)) / np.sum(
-        (y_true == 0) & (A == 1)
+    fp_a1 = zero_or_divide(
+        np.sum((y_pred == 1) & (y_true == 0) & (A == 1)),
+        np.sum((y_true == 0) & (A == 1)),
     )
 
     return np.abs(tp_a0 - tp_a1) + np.abs(fp_a0 - fp_a1)
