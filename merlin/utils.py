@@ -6,7 +6,7 @@ from numpy.typing import ArrayLike
 import pandas as pd
 import torch
 
-from merlin.helpers import ParameterParser
+from merlin.helpers import ParameterParser, FunctionParser
 
 
 def random_state(seed: np.random.SeedSequence | None) -> np.int32:
@@ -27,6 +27,11 @@ def add_parser(f):
     return f
 
 
+def add_fnparser(f):
+    f.parser = FunctionParser()
+    return f
+
+
 @add_parser
 def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
     """Extract the model params from the params string "param1=0.1, param2=1"
@@ -38,6 +43,13 @@ def extract_params(params_str: str | dict[str, Any]) -> dict[str, Any]:
         return params_str
 
     return extract_params.parser.parse(params_str)  # type: ignore
+
+
+@add_fnparser
+def extract_fnparams(params_str: str | dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Extract the model params from the params string "fn(param0,param1=0.1,param2=1)" """
+
+    return extract_fnparams.parser.parse(params_str)  # type: ignore
 
 
 def subsample_mask(

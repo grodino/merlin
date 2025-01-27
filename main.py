@@ -86,13 +86,6 @@ def run_audit(
     ############################################################################
     # GENERATE THE DATA SPLITS                                                 #
     ############################################################################
-    # Choose whether we want the sensitive feature to be binarized
-    if "binarized" in dataset:
-        dataset = dataset.replace("_binarized", "")
-        binarize = True
-    else:
-        binarize = False
-
     # Extract the model params from the params string. For now, we assume that
     # there are only float params. Should be changed.
     model_params_dict = extract_params(model_params)
@@ -101,7 +94,7 @@ def run_audit(
     # To know which data transform to use, we need to know which torch model is
     # used. (mainly for the data normalization.)
     extra_args = {}
-    if dataset == "celeba":
+    if dataset.startswith("celeba"):
         extra_args = {
             "torch_model_architecture": base_model_name,
         }
@@ -109,7 +102,6 @@ def run_audit(
     features, label, group, train_idx, test_idx, audit_idx = get_data(
         dataset,
         audit_pool_size,
-        binarize_group=binarize,
         traintest_seed=seeds["train_test"],
         auditset_seed=seeds["data_split"],
         **extra_args,
@@ -167,7 +159,7 @@ def run_audit(
         fit_time = perf_counter() - fit_time
 
     # Evaluate the perfs on train and test set (when not manipulated)
-    if dataset != "celeba":
+    if not dataset.startswith("celeba"):
         training_perfs = {
             "train_accuracy": np.mean(
                 model.predict(
@@ -237,6 +229,7 @@ def run_audit(
             X_queries = np.concatenate([features[test_idx], X_audit])
         elif isinstance(features, torch.Tensor):
             X_queries = torch.cat([features[test_idx], X_audit])
+
         y_queries = pd.concat([label.loc[test_idx], y_audit])
         A_queries = pd.concat([group.loc[test_idx], A_audit])
 
@@ -686,20 +679,22 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
     else:
         celeba_targets = CelebADataset.TRAINING_TARGETS
 
-    base_models = {
-        "celeba": [
-            (
-                "lenet",
-                f'target="{celeba_feature}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{celeba_feature}.pth',
-            )
-            for celeba_feature in celeba_targets
-        ],
+    base_models = (
+        {
+            f'celeba("{target}",gender,binarize_group=True)': [
+                (
+                    "lenet",
+                    f'target="{target}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{target}.pth',
+                )
+            ]
+            for target in celeba_targets
+        }
         # | {
         #     f"resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth"
         #     for celeba_feature in celeba_targets
         # },
-        "ACSEmployment_binarized": [("skrub", ""), ("skrub_logistic", "")],
-    }
+        # | {"ACSEmployment_binarized": [("skrub", ""), ("skrub_logistic", "")]}
+    )
 
     if run:
         output.unlink(missing_ok=True)

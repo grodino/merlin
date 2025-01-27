@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 import torch
 
 from merlin.models.torch import MODEL_INPUT_TRANSFORMATION_FACTORY
-from merlin.utils import random_state
+from merlin.utils import extract_fnparams, random_state
 from .celeba import CelebADataset
 from .utils import load_whole_dataset
 
@@ -17,32 +17,58 @@ from .utils import load_whole_dataset
 def get_data(
     dataset: str,
     audit_pool_size: int,
-    binarize_group: bool = False,
     traintest_seed: SeedSequence | None = None,
     auditset_seed: SeedSequence | None = None,
     **extra_args,
 ):
-    if dataset == "ACSEmployment":
+    dataset_name, dataset_args = extract_fnparams(dataset)
+    target, sensitive_attribute = dataset_args["args"]
+    binarize_group = dataset_args.get("binarize_group", False)
+
+    if dataset_name == "folktables":
+        # NOTE: See
+        # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
+        # for the definition of the attributes
         data_source = ACSDataSource(
             survey_year="2018", horizon="1-Year", survey="person"
         )
-        # group_col = "AGEP"
-        group_col = "RAC1P"
 
-        # https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2022.pdf
-        # RAC1P Character 1
-        # Recoded detailed race code
-        # 1 .White alone
-        # 2 .Black or African American alone
-        # 3 .American Indian alone
-        # 4 .Alaska Native alone
-        # 5 .American Indian and Alaska Native tribes specified; or
-        #   .American Indian or Alaska Native, not specified and no other
-        #   .races
-        # 6 .Asian alone
-        # 7 .Native Hawaiian and Other Pacific Islander alone
-        # 8 .Some Other Race alone
-        # 9 .Two or More Races²
+        if target == "ACSEmployment":
+            # Employment status recode
+            # b .N/A (less than 16 years old)
+            # 1 .Civilian employed, at work
+            # 2 .Civilian employed, with a job but not at work
+            # 3 .Unemployed
+            # 4 .Armed forces, at work
+            # 5 .Armed forces, with a job but not at work
+            # 6 .Not in labor force
+            target_col = "ESR"
+
+            def target_transform(x):
+                return x == 1 | x == 4
+
+        else:
+            raise ValueError(f"Unknown target {target}")
+
+        if sensitive_attribute == "race":
+            # RAC1P Character 1
+            # Recoded detailed race code
+            # 1 .White alone
+            # 2 .Black or African American alone
+            # 3 .American Indian alone
+            # 4 .Alaska Native alone
+            # 5 .American Indian and Alaska Native tribes specified; or
+            #   .American Indian or Alaska Native, not specified and no other
+            #   .races
+            # 6 .Asian alone
+            # 7 .Native Hawaiian and Other Pacific Islander alone
+            # 8 .Some Other Race alone
+            # 9 .Two or More Races²
+            group_col = "RAC1P"
+
+        else:
+            raise ValueError(f"Unknown sensitive attribute {sensitive_attribute}")
+
         ACSEmployment = folktables.BasicProblem(
             features=[
                 "AGEP",
@@ -62,11 +88,9 @@ def get_data(
                 "SEX",
                 "RAC1P",
             ],
-            target="ESR",
-            target_transform=lambda x: x == 1,
+            target=target_col,
+            target_transform=target_transform,
             group=group_col,
-            preprocess=lambda x: x,
-            # postprocess=lambda x: np.nan_to_num(x, -1),
         )
 
         if binarize_group:
@@ -110,13 +134,17 @@ def get_data(
         train_idx: np.ndarray
         test_idx: np.ndarray
 
-    elif dataset == "celeba":
+    elif dataset_name == "celeba":
+        if sensitive_attribute == "gender":
+            group_col = "Male"
+        else:
+            raise ValueError(f"Unknown sensitive attribute {sensitive_attribute}")
+
         transformation_factory = MODEL_INPUT_TRANSFORMATION_FACTORY[
             extra_args["torch_model_architecture"]
         ]
         transformation = transformation_factory()
-        label_col = "Smiling"
-        group_col = "Male"
+        label_col = target
 
         # Sample a subset of CelebA test split for the audit set
         rng = np.random.default_rng(auditset_seed)
