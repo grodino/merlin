@@ -42,6 +42,8 @@ Dataset = Annotated[
     "The dataset on which the model is trained and frow which the audit set is sampled",
 ]
 
+AUDIT_POOL_SIZE = 10_000
+
 
 def run_audit(
     dataset: Dataset = "folktables()",
@@ -309,71 +311,27 @@ def run_audit(
 
 
 @app.command()
-def base_rates():
+def base_rates(dataset: str):
     """Compute the demographic parity on the entire dataset for all sensitive
     groups in the different states."""
 
-    records = []
-    groups = ["SEX", "RAC1P", "AGEP"]
-    target = "ESR"
-    data_source = ACSDataSource(survey_year="2018", horizon="1-Year", survey="person")
-
-    for year in range(2014, 2022):
-        for sensitive_group, state in product(groups, state_list):
-            data_source = ACSDataSource(
-                survey_year=str(year), horizon="1-Year", survey="person"
-            )
-            acs_data = data_source.get_data(states=[state], download=True)
-            ACSEmployment = folktables.BasicProblem(
-                features=[
-                    "AGEP",
-                    "SCHL",
-                    "MAR",
-                    # "RELP", # Not present in 2019
-                    "DIS",
-                    "ESP",
-                    "CIT",
-                    "MIG",
-                    "MIL",
-                    "ANC",
-                    "NATIVITY",
-                    "DEAR",
-                    "DEYE",
-                    "DREM",
-                    "SEX",
-                    "RAC1P",
-                ],
-                target=target,
-                target_transform=lambda x: x == 1,
-                group=sensitive_group,
-                preprocess=lambda x: x,
-                # postprocess=lambda x: np.nan_to_num(x, -1),
-            )
-            features, labeldf, groupdf = ACSEmployment.df_to_pandas(acs_data)
-
-            records.append(
-                {
-                    "year": year,
-                    "state": state,
-                    "len": len(features),
-                    "group": sensitive_group,
-                    "base_rate": float(
-                        demographic_parity(
-                            y_true=labeldf.to_numpy(),
-                            y_pred=labeldf.to_numpy(),
-                            A=groupdf.to_numpy(),
-                        )
-                    ),
-                }
-            )
-            print(records[-1])
-
-        # Delete the data source to save space
-        list(
-            map(lambda x: x.unlink(), (Path("./data") / str(year) / "1-Year").glob("*"))
-        )
-
-    pl.from_records(records).write_csv("test.csv")
+    entropy = 12345678
+    seed = np.random.SeedSequence(entropy)
+    seeds = {
+        "data_split": seed.spawn(1)[0],
+        "train_test": seed.spawn(1)[0],
+        "model": seed.spawn(1)[0],
+        "model_inference": seed.spawn(1)[0],
+        "audit_detector": seed.spawn(1)[0],
+        # "audit_set": seed.spawn(1)[0],
+    }
+    features, label, group, train_idx, test_idx, audit_idx = get_data(
+        dataset=dataset,
+        audit_pool_size=AUDIT_POOL_SIZE,
+        traintest_seed=seeds["train_test"],
+        auditset_seed=seeds["data_split"],
+        torch_model_architecture="lenet",
+    )
 
 
 @app.command()
@@ -381,7 +339,6 @@ def estimation_variance(run: bool = False):
     """Without manipulations, study the budget required to reduce variance and bias"""
 
     base_models = {"ACSEmployment_binarized": {"skrub", "skrub_logistic"}}
-    AUDIT_POOL_SIZE = 10_000
     audit_budgets = [
         100,
         500,
@@ -682,7 +639,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
     tpr = 1.0
     audit_pool_size = 10_000
     model_params = ""
-    output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
+    output = Path(f"generated/stealthiness{n_repetitions}_all.jsonl")
 
     if not all_celeba_targets:
         celeba_targets = ["Smiling"]
@@ -691,10 +648,10 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
         celeba_targets = CelebADataset.TRAINING_TARGETS
 
     base_models = {
-        "folktables(ACSEmployment,race,binarize_group=True)": [
-            "gbdt()",
-            "logistic()",
-        ]
+        # "folktables(ACSEmployment,race,binarize_group=True)": [
+        #     "gbdt()",
+        #     "logistic()",
+        # ]
     } | {
         f'celeba("{target}",gender,binarize_group=True)': [
             f'lenet(target="{target}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{target}.pth)',
@@ -742,22 +699,6 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
                     override_seeds=override_seeds,
                     output=output,
                 )
-
-                # print("model swap")
-                # run_audit(
-                #     dataset=dataset,
-                #     base_model=base_model,
-                #     model_params=model_params[dataset],
-                #     model_name="unconstrained",
-                #     strategy="model_swap",
-                #     detection_tpr=tpr,
-                #     detection_tnr=tnr,
-                #     audit_budgets=audit_budget,
-                #     audit_pool_size=audit_pool_size,
-                #     entropy=int(random_state(seed)),
-                #     override_seeds=override_seeds,
-                #     output=output,
-                # )
 
                 print("    Manipulation: threshold manipulation")
                 run_audit(
@@ -840,6 +781,7 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
     params = [
         "dataset",
         "base_model_name",
+        "base_model_params",
         "model_name",
         # "model_params",
         "strategy",
@@ -856,14 +798,16 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
         .filter(pl.col("train_accuracy").is_not_null())
         .sort("base_model_name")
     )
-    print(model_perfs)
-    # return
 
     records = (
         pl.read_ndjson(output)
         # For now, all model params are None so we can drop them
-        .select(pl.all().exclude("model_params"))
-        .filter(pl.col("audit_budget") == 1_000)
+        .select(
+            pl.all().exclude(
+                "model_params", "^.*_warnings$", "conditional_accuracy_audit"
+            )
+        )
+        # .filter(pl.col("audit_budget") == 1_000)
         # .filter(pl.col("audit_budget").is_in([100, 1_000, 5_000]))
         # The auditset hamming is what the auditor measures to detect manipulations
         .with_columns(
@@ -892,9 +836,10 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
             pl.col("auditset_hamming_std") / sqrt(n_repetitions),
             pl.col("manipulation_hamming_std") / sqrt(n_repetitions),
             pl.col("strategy_params").struct.json_encode(),
-        )
-        .sort("dataset", "audit_budget", "strategy")
+            pl.col("base_model_params").struct.json_encode(),
+        ).sort("dataset", "audit_budget", "strategy")
     )
+    records.write_csv("generated/hidden_demographic_parity.csv")
 
     fig = px.scatter(
         records,
@@ -903,7 +848,8 @@ def manipulation_stealthiness(run: bool = False, all_celeba_targets: bool = Fals
         color="strategy",
         category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
         facet_col="dataset",
-        facet_row="audit_budget",
+        facet_col_wrap=6,
+        # facet_row="audit_budget",
         symbol="base_model_name",
         error_x="auditset_hamming_std",
         error_y="hidden_demographic_parity_std",
@@ -1021,8 +967,9 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
     entropy = 12345678
     tnr = 1.0
     tpr = 1.0
+    model_params = ""
     audit_pool_size = 10_000
-    output = Path(f"generated/stealthiness{n_repetitions}.jsonl")
+    output = Path(f"generated/stealthiness{n_repetitions}_all.jsonl")
 
     if not all_celeba_targets:
         celeba_targets = ["Smiling"]
@@ -1030,15 +977,16 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
         celeba_targets = CelebADataset.TRAINING_TARGETS
 
     base_models = {
-        "celeba": {
-            "lenet": f"target={celeba_feature},num_classes=2,weight_path=data/models/lenet/lenet_celeba_{celeba_feature}.pth"
-            for celeba_feature in celeba_targets
-        },
-        # | {
-        #     f"resnet18": f"num_classes=2,weight_path=data/models/resnet18_celeba_{celeba_feature}.pth"
-        #     for celeba_feature in celeba_targets
-        # },
-        "ACSEmployment_binarized": {"skrub": "", "skrub_logistic": ""},
+        "folktables(ACSEmployment,race,binarize_group=True)": [
+            "gbdt()",
+            "logistic()",
+        ]
+    } | {
+        f'celeba("{target}",gender,binarize_group=True)': [
+            f'lenet(target="{target}",num_classes=2,weight_path=data/models/lenet/lenet_celeba_{target}.pth)',
+            # f"resnet18(num_classes=2,weight_path=data/models/resnet18_celeba_{target}.pth)",
+        ]
+        for target in celeba_targets
     }
 
     if run:
@@ -1056,16 +1004,19 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
         }
 
         for dataset, dataset_base_models in base_models.items():
-            print("Running experiments with dataset: ", dataset)
+            print(f"{' Dataset: '+dataset+' ':-^81}")
 
-            for (base_model, model_params), seed in product(
-                dataset_base_models.items(),
+            for base_model, seed in product(
+                dataset_base_models,
                 np.random.SeedSequence(entropy).spawn(n_repetitions),
             ):
-                print("honest unconstrained")
+                print(
+                    f"--- Base model: {base_model}({model_params:.60}{'...' if len(model_params) > 60 else ''}) [{seed.spawn_key}]"
+                )
+                print("    Manipulation: honest unconstrained")
                 run_audit(
                     dataset=dataset,
-                    base_model_name=base_model,
+                    base_model=base_model,
                     model_name="unconstrained",
                     model_params=model_params,
                     strategy="honest",
@@ -1078,26 +1029,10 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
                     output=output,
                 )
 
-                # print("model swap")
-                # run_audit(
-                #     dataset=dataset,
-                #     base_model_name=base_model,
-                #     model_params=model_params[dataset],
-                #     model_name="unconstrained",
-                #     strategy="model_swap",
-                #     detection_tpr=tpr,
-                #     detection_tnr=tnr,
-                #     audit_budgets=audit_budget,
-                #     audit_pool_size=audit_pool_size,
-                #     entropy=int(random_state(seed)),
-                #     override_seeds=override_seeds,
-                #     output=output,
-                # )
-
-                print("threshold manipulation")
+                print("    Manipulation: threshold manipulation")
                 run_audit(
                     dataset=dataset,
-                    base_model_name=base_model,
+                    base_model=base_model,
                     model_params=model_params,
                     model_name="unconstrained",
                     strategy="threshold_manipulation",
@@ -1110,14 +1045,14 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
                     output=output,
                 )
 
-                print("linear relaxation", end=" ", flush=True)
+                print("    Manipulation: linear relaxation", end=" ", flush=True)
                 for tolerated_unfairness in [0.0] + np.logspace(
                     -3, -1, num=10
                 ).tolist():
                     print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
                     run_audit(
                         dataset=dataset,
-                        base_model_name=base_model,
+                        base_model=base_model,
                         model_params=model_params,
                         model_name="unconstrained",
                         strategy="linear_relaxation",
@@ -1132,12 +1067,12 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
                     )
                 print()
 
-                print("score transport", end=" ", flush=True)
+                print("    Manipulation: score transport", end=" ", flush=True)
                 for tolerated_unfairness in np.linspace(0, 1, num=10, endpoint=True):
                     print(f"{tolerated_unfairness:.3f}", end=" ", flush=True)
                     run_audit(
                         dataset=dataset,
-                        base_model_name=base_model,
+                        base_model=base_model,
                         model_params=model_params,
                         model_name="unconstrained",
                         strategy="label_transport",
@@ -1152,12 +1087,12 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
                     )
                 print()
 
-                print("manipulation ROC", end=" ", flush=True)
+                print("    Manipulation: manipulation ROC", end=" ", flush=True)
                 for theta in np.linspace(0.5, 0.6, num=10):
                     print(f"{theta:.2f}", end=" ", flush=True)
                     run_audit(
                         dataset=dataset,
-                        base_model_name=base_model,
+                        base_model=base_model,
                         model_params=model_params,
                         model_name="unconstrained",
                         strategy="ROC_mitigation",
@@ -1200,13 +1135,9 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
     # dataset).
     detection_thresholds = pl.from_records(
         [
-            {"dataset": "celeba", "threshold": 0.11, "base_model_name": "lenet"},
-            {"dataset": "ACSEmployment", "threshold": 0.15, "base_model_name": "skrub"},
-            {
-                "dataset": "ACSEmployment",
-                "threshold": 0.19,
-                "base_model_name": "skrub_logistic",
-            },
+            {"threshold": 0.11, "base_model_name": "lenet"},
+            {"threshold": 0.15, "base_model_name": "skrub"},
+            {"threshold": 0.18, "base_model_name": "skrub_logistic"},
         ]
     )
 
@@ -1224,7 +1155,7 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
         # For now, all model params are None so we can drop them
         .select(*params, *values)
         # Set the detection threshold for the different datasets and models
-        .join(detection_thresholds, on=["dataset", "base_model_name"])
+        .join(detection_thresholds, on="base_model_name")
         # The auditset hamming is what the auditor measures to detect manipulations
         .with_columns(
             auditset_hamming=1 - pl.col("utility_audit"),
@@ -1262,6 +1193,8 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
         .sort("dataset", "audit_budget", "strategy")
     )
 
+    print(records)
+
     fig = px.line(
         records,
         x="audit_budget",
@@ -1270,6 +1203,7 @@ def hiddable_unfairness(run: bool = False, all_celeba_targets: bool = False):
         color="strategy",
         category_orders=dict(strategy=sorted(records["strategy"].sort().unique())),
         facet_col="dataset",
+        facet_col_wrap=6,
         symbol="base_model_name",
     )
     fig.update_traces(marker_size=20)

@@ -50,14 +50,14 @@ class CelebADataset(Dataset):
         "Oval_Face",
         "Pale_Skin",
         "Pointy_Nose",
-        "Receding_Hairline",
+        # "Receding_Hairline", optimizer issue in LinearRelaxation
         "Rosy_Cheeks",
         "Sideburns",
         "Smiling",
         "Straight_Hair",
         "Wavy_Hair",
         "Wearing_Earrings",
-        "Wearing_Hat",
+        # "Wearing_Hat", optimizer issue in LinearRelaxation
         "Wearing_Lipstick",
         "Wearing_Necklace",
         "Wearing_Necktie",
